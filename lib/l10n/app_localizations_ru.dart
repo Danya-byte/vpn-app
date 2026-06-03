@@ -98,6 +98,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get btnFromFile => 'Из файла';
 
   @override
+  String get btnScanScreenQr => 'Сканировать QR с экрана';
+
+  @override
   String get btnExport => 'Экспорт профилей…';
 
   @override
@@ -190,6 +193,12 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get openSourceNote => 'Открытый код • без телеметрии';
+
+  @override
+  String get factsFeed => 'Данные о цензуре';
+
+  @override
+  String get factsFeedBuiltIn => 'Встроенные (обновляются при подключении)';
 
   @override
   String get vpnModeTitle => 'Режим VPN';
@@ -346,6 +355,9 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get importNotConnected =>
       'Импортировано — не подключено. Проверьте в списке.';
+
+  @override
+  String get importDiscarded => 'Отклонено и удалено';
 
   @override
   String get importReviewTitle => 'Импортированный сервер';
@@ -581,6 +593,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get policyTestAll => 'Проверить все';
 
   @override
+  String get policyAlive => 'Живые узлы (ответили на проверку через туннель)';
+
+  @override
   String get policyTimeout => 'таймаут';
 
   @override
@@ -626,6 +641,13 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get proxyModeLeakHint =>
       'Режим прокси — приложения, игнорирующие системный прокси, идут напрямую';
+
+  @override
+  String get whitelistModeTitle => 'Режим белого списка';
+
+  @override
+  String get whitelistModeBody =>
+      'Мобильную сеть свернули до государственного белого списка — открыты только российские сайты, зарубежный выход недоступен. Это не блокировка узла; нужен Wi-Fi или домашний релей.';
 
   @override
   String get unblockHint =>

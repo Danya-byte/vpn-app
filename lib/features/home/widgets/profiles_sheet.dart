@@ -156,6 +156,7 @@ class _AddMenu extends StatelessWidget {
         item(Icons.link_rounded, l.btnSubscriptionUrl, _importUrlDialog),
         item(Icons.paste_rounded, l.btnFromClipboard, _importClipboard),
         item(Icons.folder_open_rounded, l.btnFromFile, _importFile),
+        item(Icons.qr_code_scanner_rounded, l.btnScanScreenQr, _scanScreenQr),
         const Divider(height: 6, indent: 18, endIndent: 18),
         item(Icons.save_alt_rounded, l.btnExport, _exportProfiles),
         const SizedBox(height: 6),
@@ -248,6 +249,27 @@ Future<void> _exportProfiles(BuildContext context, WidgetRef ref) async {
   } catch (e) {
     toast.message(l.msgLoadError(friendlyError(e)), kind: ToastKind.error);
   }
+}
+
+/// Capture the screen natively and scan it for a QR — e.g. a config QR shown in
+/// Telegram Desktop, the dominant RF sharing flow, without a camera. The source
+/// is untrusted, so it goes through the preview-gate before connecting.
+Future<void> _scanScreenQr(BuildContext context, WidgetRef ref) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  Uint8List? bytes;
+  try {
+    bytes = await _filesChannel.invokeMethod<Uint8List>('scanScreenQr');
+  } catch (e) {
+    toast.message(l.msgLoadError('$e'), kind: ToastKind.error);
+    return;
+  }
+  if (!context.mounted) return;
+  if (bytes == null || bytes.isEmpty) {
+    toast.message(l.msgQrNotFound, kind: ToastKind.error);
+    return;
+  }
+  await importDroppedContent(context, ref, bytes, trusted: false);
 }
 
 Future<void> _importFile(BuildContext context, WidgetRef ref) async {

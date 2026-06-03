@@ -3,19 +3,20 @@
 
   Builds the release app with the version/commit stamped in (so About reports the
   exact build), bundles the SHA-256-verified cores + rule-sets + the license and
-  third-party notices, OPTIONALLY Authenticode-signs every binary, and zips it to
-  dist\. CorePaths resolves core\windows\ next to the executable, so the cores are
-  copied beside vpn_app.exe inside the archive — extract-and-run, no installer.
+  third-party notices, and zips it to dist\. CorePaths resolves core\windows\ next
+  to the executable, so the cores are copied beside vpn_app.exe inside the archive
+  — extract-and-run, no installer.
+
+  The release ships UNSIGNED, on purpose: this is open-source with public releases,
+  so the published .sha256 is the integrity check (verify it against the release
+  page). An Authenticode cert only suppresses the SmartScreen prompt — a UX nicety,
+  not a security property — so we don't require one. (If you ever want it, sign the
+  artifacts in dist\ yourself before uploading; nothing here depends on it.)
 
     pwsh tool\package.ps1
-    # to sign (clears SmartScreen + reduces AV false-positives — critical for RF
-    # users who sideload from Telegram), set these first:
-    #   $env:VPNAPP_SIGN_PFX  = 'C:\path\to\cert.pfx'
-    #   $env:VPNAPP_SIGN_PASS = '<pfx password>'
-    # Pass -RequireSigning in CI to FAIL (not just warn) if the cert is missing.
 #>
 [CmdletBinding()]
-param([switch]$RequireSigning)
+param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
@@ -67,41 +68,6 @@ if (-not (Test-Path $copying)) {
 }
 if (Test-Path $copying) { Copy-Item $copying (Join-Path $rel 'COPYING.txt') -Force }
 
-# --- optional Authenticode signing (E1) ---------------------------------------
-function Find-SignTool {
-  $c = Get-Command signtool.exe -ErrorAction SilentlyContinue
-  if ($c) { return $c.Source }
-  $kits = 'C:\Program Files (x86)\Windows Kits\10\bin'
-  if (Test-Path $kits) {
-    $st = Get-ChildItem $kits -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-      Where-Object { $_.FullName -match 'x64' } | Select-Object -Last 1
-    if ($st) { return $st.FullName }
-  }
-  return $null
-}
-$script:signtool = $null
-function Sign-One($path) {
-  if (-not (Test-Path $path)) { return }
-  if (-not $script:signtool) {
-    $script:signtool = Find-SignTool
-    if (-not $script:signtool) { throw 'VPNAPP_SIGN_PFX set but signtool.exe not found (install the Windows SDK)' }
-  }
-  & $script:signtool sign /fd SHA256 /f $env:VPNAPP_SIGN_PFX /p $env:VPNAPP_SIGN_PASS `
-    /tr http://timestamp.digicert.com /td SHA256 $path
-  if ($LASTEXITCODE -ne 0) { throw "signing failed for $path" }
-  Write-Host "signed: $(Split-Path $path -Leaf)"
-}
-$doSign = [bool]$env:VPNAPP_SIGN_PFX
-if ($doSign) {
-  Sign-One (Join-Path $rel 'vpn_app.exe')
-  Sign-One (Join-Path $coreDst 'sing-box.exe')
-  Sign-One (Join-Path $coreDst 'xray.exe')
-} else {
-  $msg = 'UNSIGNED build. SmartScreen will warn + AV may quarantine the cores. Set VPNAPP_SIGN_PFX to sign.'
-  if ($RequireSigning) { throw $msg }
-  Write-Warning $msg
-}
-
 # --- zip + publish the SHA-256 so users can verify the download ----------------
 $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
@@ -117,7 +83,6 @@ if ($iscc) {
   & $iscc.Source "/DAppVer=$ver" (Join-Path $PSScriptRoot 'installer.iss')
   if ($LASTEXITCODE -ne 0) { throw 'iscc (installer build) failed' }
   $setup = Join-Path $dist "vpn_app-setup-$ver.exe"
-  if ($doSign) { Sign-One $setup }   # the installer itself must be signed too
   if (Test-Path $setup) {
     $sh = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
     Set-Content -Path "$setup.sha256" -Value "$sh  vpn_app-setup-$ver.exe" -Encoding ascii

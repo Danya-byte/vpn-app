@@ -48,8 +48,11 @@ class SingBoxConfig {
   // Domains RF THROTTLES via SNI-DPI (reachable directly, just slowed) — where
   // splitting the TLS ClientHello defeats the throttle with NO server. Strictly
   // throttled services, NOT IP-blocked ones (those need a foreign exit, which
-  // fragmentation can't conjure). Suffix match → covers all subdomains.
-  static const List<String> _desyncDomains = [
+  // fragmentation can't conjure). Suffix match → covers all subdomains. Feed-
+  // tunable (combination ②): the loader overwrites this from the signed-in-spirit
+  // ТСПУ-fact feed so a new throttle wave is answered by a data push, not a build;
+  // [CensorshipFacts.defaults] holds the baked copy this is initialised to.
+  static List<String> desyncDomains = const [
     // YouTube
     'youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'ggpht.com',
     'youtube-nocookie.com', 'youtubei.googleapis.com',
@@ -63,13 +66,13 @@ class SingBoxConfig {
   // fragmentation applies and ТСПУ never sees the full SNI.
   static List<Map<String, dynamic>> _desyncRules() => [
         {
-          'domain_suffix': _desyncDomains,
+          'domain_suffix': desyncDomains,
           'network': 'udp',
           'port': 443,
           'action': 'reject',
         },
         {
-          'domain_suffix': _desyncDomains,
+          'domain_suffix': desyncDomains,
           'action': 'route',
           'outbound': 'direct',
           'tls_fragment': true,
@@ -114,6 +117,30 @@ class SingBoxConfig {
       'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs';
   static const String _geositeAds =
       'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs';
+
+  // Native Telegram unblock (под капотом): RF blocks Telegram at the IP level and
+  // throttles/blocks its UDP calls, so the fix is to force ALL Telegram traffic —
+  // messaging (TCP) AND voice/video calls (UDP) — through the foreign tunnel.
+  // Telegram's PUBLISHED DC + media CIDRs (core.telegram.org/resources/cidr.txt)
+  // + its domains, matched on IP so MTProto (which dials raw DC IPs, no DNS) is
+  // caught too. UDP coverage is what makes CALLS work — in TUN mode, where their
+  // UDP is captured (system-proxy mode is TCP-only: messaging yes, calls no).
+  static const List<String> _telegramDomains = [
+    'telegram.org', 't.me', 'telegram.me', 'telega.im', 'tdesktop.com',
+    'telegram-cdn.org', 'cdn-telegram.org', 'telesco.pe', 'comments.app',
+  ];
+  static const List<String> _telegramCidrs = [
+    '91.108.4.0/22', '91.108.8.0/22', '91.108.12.0/22', '91.108.16.0/22',
+    '91.108.20.0/22', '91.108.56.0/22', '95.161.64.0/20', '149.154.160.0/20',
+    '91.105.192.0/23', '185.76.151.0/24',
+    '2001:b28:f23c::/48', '2001:b28:f23d::/48', '2001:b28:f23f::/48',
+    '2001:67c:4e8::/48', '2a0a:f280::/32',
+  ];
+
+  /// Pin Telegram to the foreign exit — set false to let it go direct. Default on
+  /// (the whole point in RF). A plain static like [ruleSetDir]; the engine reads
+  /// it, so `dart run` tooling gets the default without wiring a setting.
+  static bool telegramUnblock = true;
 
   /// Absolute path to the bundled rule-sets dir; set by the app at startup so
   /// rule-sets load LOCALLY (no startup download — github is blocked in RF and
@@ -425,6 +452,11 @@ class SingBoxConfig {
           {'action': 'sniff'},
           {'protocol': 'dns', 'action': 'hijack-dns'},
           if (useRuleSets) {'rule_set': 'geosite-ads', 'action': 'reject'},
+          // Native Telegram unblock: msgs (TCP) + calls (UDP) → the proxy exit,
+          // BEFORE the private/RU-direct rules so Telegram always rides the tunnel.
+          if (telegramUnblock)
+            {'domain_suffix': _telegramDomains, 'outbound': tag},
+          if (telegramUnblock) {'ip_cidr': _telegramCidrs, 'outbound': tag},
           {'ip_is_private': true, 'outbound': 'direct'},
           if (useRuleSets)
             {
@@ -624,6 +656,10 @@ class SingBoxConfig {
     // block the foreign exit. Inject a leading RU-geo + private-IP → direct rule
     // so domestic traffic stays domestic. Idempotent + dedup-safe + .srs-gated.
     if (ruDirect && route != null) _injectRuDirect(cfg, route);
+    // Native Telegram unblock: pin Telegram (incl. UDP calls) to the imported
+    // config's proxy exit, independent of mode/RU-direct. Bails when the config
+    // already routes Telegram or has no proxy final.
+    if (route != null) _injectTelegram(cfg, route);
     if (dns != null) {
       // Migrate legacy 1.11 `address:` servers to the typed 1.13 format so the
       // config is valid WITHOUT ENABLE_DEPRECATED_LEGACY_DNS_SERVERS — which
@@ -704,6 +740,44 @@ class SingBoxConfig {
     }
     cfg['experimental'] = exp;
     return cfg;
+  }
+
+  // Pin Telegram (DC/relay CIDRs + domains, TCP AND UDP) to the PROXY exit so
+  // messaging and CALLS ride the foreign tunnel — natively unblocking Telegram,
+  // which RF IP-blocks (and whose UDP calls it blocks). Inserted BEFORE the
+  // RU-direct/private rules so Telegram always wins over them; bails when there
+  // is no proxy exit to pin to (no-server/desync modes — physics, can't help) or
+  // when the config already routes Telegram (respect the author). Idempotent.
+  static void _injectTelegram(
+      Map<String, dynamic> cfg, Map<String, dynamic> route) {
+    if (!telegramUnblock) return;
+    final proxyTag = route['final']?.toString();
+    if (proxyTag == null ||
+        const {'direct', 'block', 'dns-out', 'dns'}.contains(proxyTag)) {
+      return; // no foreign exit to pin Telegram to
+    }
+    final rules = [...(route['rules'] as List? ?? const [])];
+    String join(dynamic v) => v is List ? v.join(',') : '${v ?? ''}';
+    final already = rules.any((r) =>
+        r is Map &&
+        (join(r['ip_cidr']).contains('149.154.16') ||
+            join(r['domain_suffix']).contains('t.me') ||
+            join(r['domain_suffix']).contains('telegram')));
+    if (already) return; // author already handles Telegram routing
+
+    // Insert after leading sniff/hijack-dns so DNS still works, but BEFORE the
+    // RU-direct / private / proxy-everything rules.
+    var at = 0;
+    for (final r in rules) {
+      if (r is Map && (r['action'] == 'sniff' || r['action'] == 'hijack-dns')) {
+        at++;
+      } else {
+        break;
+      }
+    }
+    rules.insert(at, {'ip_cidr': _telegramCidrs, 'outbound': proxyTag});
+    rules.insert(at, {'domain_suffix': _telegramDomains, 'outbound': proxyTag});
+    route['rules'] = rules;
   }
 
   // Prepend a geoip-ru/geosite-ru + private-IP -> direct rule to an imported

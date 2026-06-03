@@ -98,6 +98,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get btnFromFile => 'From file';
 
   @override
+  String get btnScanScreenQr => 'Scan QR on screen';
+
+  @override
   String get btnExport => 'Export profiles…';
 
   @override
@@ -189,6 +192,12 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get openSourceNote => 'Open source • no telemetry';
+
+  @override
+  String get factsFeed => 'Censorship facts';
+
+  @override
+  String get factsFeedBuiltIn => 'Built-in (updates on connect)';
 
   @override
   String get vpnModeTitle => 'VPN mode';
@@ -345,6 +354,9 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get importNotConnected =>
       'Imported — not connected. Review it in the list.';
+
+  @override
+  String get importDiscarded => 'Discarded';
 
   @override
   String get importReviewTitle => 'Imported server';
@@ -578,6 +590,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get policyTestAll => 'Test all';
 
   @override
+  String get policyAlive => 'Live nodes (answered the through-tunnel probe)';
+
+  @override
   String get policyTimeout => 'timeout';
 
   @override
@@ -622,6 +637,13 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get proxyModeLeakHint =>
       'Proxy mode — apps that ignore the system proxy go direct';
+
+  @override
+  String get whitelistModeTitle => 'Whitelist mode';
+
+  @override
+  String get whitelistModeBody =>
+      'Your mobile network has been cut back to a state-approved allowlist — only Russian sites are reachable, no foreign exit works. This isn\'t a blocked node; use Wi-Fi or a domestic relay.';
 
   @override
   String get unblockHint =>

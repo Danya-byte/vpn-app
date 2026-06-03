@@ -42,7 +42,16 @@ Future<void> applyImport(
     final go = await _confirmExternalImport(context, ref, r);
     if (!context.mounted) return;
     if (go != true) {
-      toast.message(l.importNotConnected); // it's in the list, just not active
+      // Declined → roll the import BACK. A node the user said "no" to (it came
+      // from an untrusted link/QR/drop) must NOT linger in the list — that was
+      // the reported bug. Only newly-added nodes are removed; a re-import of an
+      // existing node leaves the original alone.
+      final n = ref.read(profilesProvider.notifier);
+      for (final t in r.addedTags) {
+        n.remove(t);
+      }
+      toast.message(
+          r.addedTags.isEmpty ? l.importNotConnected : l.importDiscarded);
       return;
     }
   }

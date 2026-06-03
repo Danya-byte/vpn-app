@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart'; // StateProvider (moved in Riverpod 3)
 
 import '../../core/app_settings.dart';
+import '../../core/censorship_facts_feed.dart';
 import '../../core/core_controller.dart';
 import '../../core/native_admin.dart';
 import '../../core/route_mode.dart';
@@ -63,6 +64,7 @@ class SettingsPage extends ConsumerWidget {
     final localeCode = ref.watch(settingsProvider.select((s) => s.localeCode));
     final version = ref.watch(coreControllerProvider.select((s) => s.version));
     final update = ref.watch(updateProvider).value;
+    final facts = ref.watch(censorshipFactsProvider);
     final advancedOpen = ref.watch(_advancedOpenProvider);
 
     return ListView(
@@ -500,6 +502,16 @@ class SettingsPage extends ConsumerWidget {
               _kv(context, l.version, '$_appVersion ($_appBuild)'),
               const SizedBox(height: 6),
               _kv(context, l.core, version ?? l.coreNotRunning),
+              const SizedBox(height: 6),
+              // ② — the live ТСПУ-fact feed status: "built-in" until a newer
+              // signed-in-spirit doc is pulled through the tunnel on connect.
+              _kv(
+                context,
+                l.factsFeed,
+                facts.version == 0
+                    ? l.factsFeedBuiltIn
+                    : 'v${facts.version} · ${facts.updated}',
+              ),
               const SizedBox(height: 4),
               Text(
                 l.openSourceNote,

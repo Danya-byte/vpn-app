@@ -351,6 +351,53 @@ void RestoreSystemProxy() {
   NotifyProxyChanged();
 }
 
+// Grab the whole virtual screen into an in-memory 32bpp BMP (no encoder / extra
+// lib — just a header + the DIB bits). Fed straight to the existing QR decoder so
+// a config QR shown on screen (e.g. in Telegram Desktop) can be scanned without a
+// camera. Empty vector on failure.
+std::vector<uint8_t> CaptureScreenBmp() {
+  const int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  const int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  const int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  const int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  std::vector<uint8_t> out;
+  if (w <= 0 || h <= 0) return out;
+  HDC screen = GetDC(nullptr);
+  if (!screen) return out;
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
+  if (mem && bmp) {
+    HGDIOBJ old = SelectObject(mem, bmp);
+    BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY);
+    BITMAPINFOHEADER bi = {};
+    bi.biSize = sizeof(BITMAPINFOHEADER);
+    bi.biWidth = w;
+    bi.biHeight = -h;  // top-down
+    bi.biPlanes = 1;
+    bi.biBitCount = 32;
+    bi.biCompression = BI_RGB;
+    const size_t pix = static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
+    out.resize(54 + pix);  // 14-byte file header + 40-byte info header + bits
+    out[0] = 'B';
+    out[1] = 'M';
+    const uint32_t fsize = static_cast<uint32_t>(out.size());
+    memcpy(&out[2], &fsize, 4);
+    const uint32_t off = 54;
+    memcpy(&out[10], &off, 4);
+    memcpy(&out[14], &bi, sizeof(bi));
+    BITMAPINFO info = {};
+    info.bmiHeader = bi;
+    if (GetDIBits(mem, bmp, 0, h, &out[54], &info, DIB_RGB_COLORS) == 0) {
+      out.clear();
+    }
+    SelectObject(mem, old);
+  }
+  if (bmp) DeleteObject(bmp);
+  if (mem) DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  return out;
+}
+
 bool IsElevated() {
   bool elevated = false;
   HANDLE token = nullptr;
@@ -363,6 +410,35 @@ bool IsElevated() {
     CloseHandle(token);
   }
   return elevated;
+}
+
+// Legacy shell file-drop fallback for the ELEVATED case. OLE drag-drop
+// (IDropTarget) can't cross the UIPI integrity boundary into an admin window —
+// the cross-process COM negotiation is blocked, so the cursor shows a red ✕ and
+// no events arrive, and message filters don't fix it. The legacy DragAcceptFiles
+// + WM_DROPFILES path DOES cross UIPI (with the WM_DROPFILES/WM_COPYGLOBALDATA
+// message filter set in OnCreate), so when elevated we subclass the Flutter view
+// to catch WM_DROPFILES over the client area and forward each path to Dart. No
+// hover overlay (the legacy path has no drag-enter event) — but a config file
+// can still be dropped, which is the whole point.
+static WNDPROC g_orig_view_proc = nullptr;
+static FlutterWindow* g_drop_owner = nullptr;
+
+LRESULT CALLBACK ElevatedDropProc(HWND hwnd, UINT msg, WPARAM wparam,
+                                  LPARAM lparam) {
+  if (msg == WM_DROPFILES) {
+    auto drop = reinterpret_cast<HDROP>(wparam);
+    const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+    for (UINT i = 0; i < count; i++) {
+      wchar_t path[MAX_PATH];
+      if (DragQueryFileW(drop, i, path, MAX_PATH) > 0 && g_drop_owner) {
+        g_drop_owner->OnFileDropped(Utf8FromUtf16(path));
+      }
+    }
+    DragFinish(drop);
+    return 0;
+  }
+  return ::CallWindowProc(g_orig_view_proc, hwnd, msg, wparam, lparam);
 }
 
 void RelaunchElevated() {
@@ -515,6 +591,14 @@ bool FlutterWindow::OnCreate() {
           } else {
             result->Success(flutter::EncodableValue());
           }
+        } else if (call.method_name() == "scanScreenQr") {
+          // Whole-screen grab → BMP bytes → Dart runs the existing QR decoder.
+          std::vector<uint8_t> bmp = CaptureScreenBmp();
+          if (bmp.empty()) {
+            result->Success(flutter::EncodableValue());  // null → "no QR"
+          } else {
+            result->Success(flutter::EncodableValue(std::move(bmp)));
+          }
         } else {
           result->NotImplemented();
         }
@@ -627,11 +711,41 @@ bool FlutterWindow::OnCreate() {
         }
       });
 
-  // Register the Flutter view as an OLE drop target.
   drop_hwnd_ = flutter_controller_->view()->GetNativeWindow();
-  auto* target = new FileDropTarget(this);
-  RegisterDragDrop(drop_hwnd_, target);
-  target->Release();  // OLE keeps its own reference
+
+  // Allow the drag-drop messages across the UIPI boundary so an ELEVATED window
+  // (admin — TUN mode) can receive them from the normal-integrity Explorer.
+  // Process-global (covers OLE's internal hidden windows) + per-window.
+  // WM_COPYGLOBALDATA (0x0049) carries the dragged payload. Harmless when not
+  // elevated.
+  ::ChangeWindowMessageFilter(WM_DROPFILES, MSGFLT_ADD);
+  ::ChangeWindowMessageFilter(WM_COPYDATA, MSGFLT_ADD);
+  ::ChangeWindowMessageFilter(0x0049 /* WM_COPYGLOBALDATA */, MSGFLT_ADD);
+  for (HWND h : {GetHandle(), drop_hwnd_}) {
+    if (!h) continue;
+    ::ChangeWindowMessageFilterEx(h, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
+    ::ChangeWindowMessageFilterEx(h, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
+    ::ChangeWindowMessageFilterEx(h, 0x0049, MSGFLT_ALLOW, nullptr);
+  }
+
+  if (IsElevated()) {
+    // Admin window: OLE drag-drop is UIPI-blocked (red ✕, no events) and message
+    // filters don't fix the COM negotiation. Fall back to the legacy shell
+    // file-drop, which DOES cross UIPI — register the view for WM_DROPFILES and
+    // subclass it to catch the dropped paths. (No hover overlay here — a Windows
+    // limitation for elevated windows — but a config file drops + imports.)
+    g_drop_owner = this;
+    ::DragAcceptFiles(drop_hwnd_, TRUE);
+    g_orig_view_proc = reinterpret_cast<WNDPROC>(::SetWindowLongPtr(
+        drop_hwnd_, GWLP_WNDPROC,
+        reinterpret_cast<LONG_PTR>(ElevatedDropProc)));
+  } else {
+    // Normal window: full OLE drop target — files, virtual files, text, AND the
+    // drag-enter/leave events that drive the frosted overlay.
+    auto* target = new FileDropTarget(this);
+    ::RegisterDragDrop(drop_hwnd_, target);
+    target->Release();  // OLE keeps its own reference
+  }
 
   StartNetworkWatch();
   AddTrayIcon();  // so close-to-tray has a way back to the window

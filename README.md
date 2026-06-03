@@ -57,7 +57,7 @@ native plugins, so no special build flags (or Developer Mode) are required.
 ```sh
 pwsh tool/package.ps1      # builds release (version/commit stamped), bundles cores +
                            # rule-sets + LICENSE/NOTICES, -> dist/vpn_app-windows-x64.zip
-                           #   + a .sha256; signs every binary if VPNAPP_SIGN_PFX is set
+                           #   + a .sha256 (unsigned; the hash is the integrity check)
 iscc tool/installer.iss    # optional: a proper Inno Setup installer (shortcuts, autostart,
                            #   clean uninstall) -> dist/vpn_app-setup-<ver>.exe
 ```
@@ -81,7 +81,7 @@ tool/          fetch-cores.ps1, gen.dart (dev helpers)
 
 Architecture: the Flutter UI generates sing-box JSON from profiles and runs the core as a
 managed child process; the UI talks to it over the Clash API. See
-[CHANGELOG.md](CHANGELOG.md) for the milestone log.
+[CHANGELOG.txt](CHANGELOG.txt) for the change log.
 
 ## Verify your setup (no trust required)
 
@@ -111,16 +111,17 @@ dart run tool/verify_store.dart --connect  # + run the core, prove the exit IP d
   the tunnel**, so a stale build learns about a fix even where GitHub is blocked direct — but
   *downloading* it still needs the tunnel to cover your browser (TUN mode) or a mirror; a
   blocked-GitHub download page is a known distribution gap.
-- Releases publish a `.sha256` next to the zip; sign your build by setting `VPNAPP_SIGN_PFX`
-  (see `tool/package.ps1`) — an EV-signed binary clears SmartScreen and reduces AV friction.
+- Releases ship **unsigned** with a published `.sha256` next to the zip — the hash (against
+  open-source, inspectable builds) is the integrity check. Code-signing only suppresses the
+  one-time SmartScreen prompt; it's a UX nicety, not a security property, so it isn't required.
 
 ## Roadmap to "best-of-the-best in RF"
 
 Done: hardened kill-switch, secret-guarded API, atomic profile store, localized errors,
 SHA-256-pinned cores, installer, version stamping, in-tunnel update check.
-Remaining (tracked in CHANGELOG / M6): a signed **LocalSystem service** so TUN needs no
-per-launch UAC and can autostart; one-click **auto-update apply** (today it surfaces the new
-version + link); reproducible-build CI publishing signed artifacts + hashes.
+Remaining (tracked in CHANGELOG / M6): a **LocalSystem service** so TUN needs no per-launch
+UAC and can autostart; one-click **auto-update apply** (today it surfaces the new version +
+link); reproducible-build CI publishing artifacts + hashes; an Android build.
 
 ## License
 

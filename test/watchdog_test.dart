@@ -51,10 +51,15 @@ void main() {
   });
 
   group('runDarkPath (dark-episode ordering)', () {
-    test('#1 GATE: network down → bail and NEVER run the cascade', () async {
-      var hopped = false;
+    test('#1 GATE: network down → bail; cascade + foreign-probe NEVER run',
+        () async {
+      var hopped = false, foreignAsked = false;
       final action = await runDarkPath(
         networkUp: () async => false,
+        foreignReachable: () async {
+          foreignAsked = true;
+          return true;
+        },
         tryHop: () async {
           hopped = true;
           return true;
@@ -66,12 +71,52 @@ void main() {
       expect(action, DarkAction.networkDownBail);
       expect(hopped, isFalse,
           reason: 'a downed local network must not trigger a transport hop');
+      expect(foreignAsked, isFalse,
+          reason: 'network-down is decided before the foreign/whitelist probe');
+    });
+
+    test(
+        'WHITELIST GATE: RU up but all foreign dark → whitelistMode, NO cascade',
+        () async {
+      var hopped = false;
+      final action = await runDarkPath(
+        networkUp: () async => true,
+        foreignReachable: () async => false, // every foreign control IP dark
+        tryHop: () async {
+          hopped = true;
+          return true;
+        },
+        allDark: () => false,
+        leafFamily: () async => 'vless-tls',
+        variantsExhausted: false,
+      );
+      expect(action, DarkAction.whitelistMode);
+      expect(hopped, isFalse,
+          reason: 'no foreign exit is reachable — hopping transports is futile');
+    });
+
+    test('foreign reachable (normal block) → proceeds to the cascade', () async {
+      var hopped = false;
+      final action = await runDarkPath(
+        networkUp: () async => true,
+        foreignReachable: () async => true, // foreign fine — the NODE is blocked
+        tryHop: () async {
+          hopped = true;
+          return true;
+        },
+        allDark: () => false,
+        leafFamily: () async => 'vless-tls',
+        variantsExhausted: false,
+      );
+      expect(action, DarkAction.cascaded);
+      expect(hopped, isTrue);
     });
 
     test('a successful hop short-circuits BEFORE any fp logic', () async {
       var leafAsked = false;
       final action = await runDarkPath(
         networkUp: () async => true,
+        foreignReachable: () async => true,
         tryHop: () async => true,
         allDark: () => false,
         leafFamily: () async {
@@ -87,6 +132,7 @@ void main() {
     test('all-dark (IP block) stops before an fp-restart', () async {
       final action = await runDarkPath(
         networkUp: () async => true,
+        foreignReachable: () async => true,
         tryHop: () async => false,
         allDark: () => true,
         leafFamily: () async => 'vless-tls',
@@ -99,6 +145,7 @@ void main() {
         () async {
       final action = await runDarkPath(
         networkUp: () async => true,
+        foreignReachable: () async => true,
         tryHop: () async => false,
         allDark: () => false,
         leafFamily: () async => 'vless-reality',
@@ -110,6 +157,7 @@ void main() {
     test('plain-TLS leaf with variants left → fpEscalate', () async {
       final action = await runDarkPath(
         networkUp: () async => true,
+        foreignReachable: () async => true,
         tryHop: () async => false,
         allDark: () => false,
         leafFamily: () async => 'vless-tls',
@@ -121,12 +169,31 @@ void main() {
     test('plain-TLS leaf but every variant exhausted → stopExhausted', () async {
       final action = await runDarkPath(
         networkUp: () async => true,
+        foreignReachable: () async => true,
         tryHop: () async => false,
         allDark: () => false,
         leafFamily: () async => 'vless-tls',
         variantsExhausted: true,
       );
       expect(action, DarkAction.stopExhausted);
+    });
+  });
+
+  group('decideFreeze (16KB connection-freeze, healthy-branch watch)', () {
+    test('bulk flows → none (genuinely healthy), whatever the counter', () {
+      expect(decideFreeze(bulkOk: true, freezeFails: 0), FreezeAction.none);
+      expect(decideFreeze(bulkOk: true, freezeFails: 9), FreezeAction.none);
+    });
+
+    test('a single bulk stall does NOT act (debounce ≥2)', () {
+      expect(decideFreeze(bulkOk: false, freezeFails: 1), FreezeAction.none);
+    });
+
+    test('sustained stall → hop off the long TLS stream (XHTTP/QUIC)', () {
+      // Battle-tested: reshaping a flow-mandating Reality node breaks it, so the
+      // remedy is a transport hop, not a same-node reshape.
+      expect(decideFreeze(bulkOk: false, freezeFails: 2), FreezeAction.hop);
+      expect(decideFreeze(bulkOk: false, freezeFails: 5), FreezeAction.hop);
     });
   });
 }

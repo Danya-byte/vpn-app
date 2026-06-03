@@ -272,6 +272,12 @@ abstract class AppLocalizations {
   /// **'From file'**
   String get btnFromFile;
 
+  /// No description provided for @btnScanScreenQr.
+  ///
+  /// In en, this message translates to:
+  /// **'Scan QR on screen'**
+  String get btnScanScreenQr;
+
   /// No description provided for @btnExport.
   ///
   /// In en, this message translates to:
@@ -445,6 +451,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Open source • no telemetry'**
   String get openSourceNote;
+
+  /// No description provided for @factsFeed.
+  ///
+  /// In en, this message translates to:
+  /// **'Censorship facts'**
+  String get factsFeed;
+
+  /// No description provided for @factsFeedBuiltIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in (updates on connect)'**
+  String get factsFeedBuiltIn;
 
   /// No description provided for @vpnModeTitle.
   ///
@@ -715,6 +733,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Imported — not connected. Review it in the list.'**
   String get importNotConnected;
+
+  /// No description provided for @importDiscarded.
+  ///
+  /// In en, this message translates to:
+  /// **'Discarded'**
+  String get importDiscarded;
 
   /// No description provided for @importReviewTitle.
   ///
@@ -1112,6 +1136,12 @@ abstract class AppLocalizations {
   /// **'Test all'**
   String get policyTestAll;
 
+  /// No description provided for @policyAlive.
+  ///
+  /// In en, this message translates to:
+  /// **'Live nodes (answered the through-tunnel probe)'**
+  String get policyAlive;
+
   /// No description provided for @policyTimeout.
   ///
   /// In en, this message translates to:
@@ -1195,6 +1225,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Proxy mode — apps that ignore the system proxy go direct'**
   String get proxyModeLeakHint;
+
+  /// No description provided for @whitelistModeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Whitelist mode'**
+  String get whitelistModeTitle;
+
+  /// No description provided for @whitelistModeBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Your mobile network has been cut back to a state-approved allowlist — only Russian sites are reachable, no foreign exit works. This isn\'t a blocked node; use Wi-Fi or a domestic relay.'**
+  String get whitelistModeBody;
 
   /// No description provided for @unblockHint.
   ///

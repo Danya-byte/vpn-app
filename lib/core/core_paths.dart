@@ -38,6 +38,10 @@ class CorePaths {
   /// Absolute path to xray.exe (the XHTTP/Reality-XTLS bridge core), if bundled.
   static String xray() => _resolveBinary('xray.exe');
 
+  /// The AmneziaWG userspace bridge (wireproxy-amnezia) — fetched separately,
+  /// like xray. Present → [CoreController._bridgeAmnezia] rides AmneziaWG.
+  static String awg() => _resolveBinary('awg.exe');
+
   /// Absolute path to the bundled rule-sets dir (geoip-ru.srs, …). Bundled
   /// locally so startup never blocks on a (RF-blocked) github download.
   static String ruleSetsDir() {

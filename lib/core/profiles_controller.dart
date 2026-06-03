@@ -45,11 +45,18 @@ class ProfilesState {
 /// Outcome of an import: how many profiles were parsed vs newly added, and the
 /// tag to (re)select afterwards (set even when nothing new was added).
 class ImportResult {
-  const ImportResult({required this.parsed, required this.added, this.firstTag});
+  const ImportResult(
+      {required this.parsed,
+      required this.added,
+      this.firstTag,
+      this.addedTags = const []});
 
   final int parsed;
   final int added;
   final String? firstTag;
+  // Tags of the NEWLY-added nodes, so a declined external import can be rolled
+  // back (the node must not linger in the list after the user said no).
+  final List<String> addedTags;
 
   bool get recognized => parsed > 0;
   bool get alreadyImported => parsed > 0 && added == 0;
@@ -117,6 +124,7 @@ class ProfilesController extends Notifier<ProfilesState> {
     final byContent = {for (final n in nodes) _contentKey(n): n.tag};
     final tags = {for (final n in nodes) n.tag};
     String? firstTag;
+    final addedTags = <String>[];
     var added = 0;
     for (final p in parsed) {
       final existing = byContent[_contentKey(p)];
@@ -145,6 +153,7 @@ class ProfilesController extends Notifier<ProfilesState> {
       tags.add(tag);
       byContent[_contentKey(node)] = tag;
       firstTag ??= tag;
+      addedTags.add(tag);
       added++;
     }
 
@@ -174,7 +183,11 @@ class ProfilesController extends Notifier<ProfilesState> {
               : (selectFirst ? (firstTag ?? state.selected) : state.selected),
     );
     _persist();
-    return ImportResult(parsed: parsed.length, added: added, firstTag: firstTag);
+    return ImportResult(
+        parsed: parsed.length,
+        added: added,
+        firstTag: firstTag,
+        addedTags: addedTags);
   }
 
   Future<({String body, SubInfo? info})> _fetch(String url) async {
@@ -251,7 +264,13 @@ class ProfilesController extends Notifier<ProfilesState> {
         ? (nodes.isNotEmpty ? nodes.first.tag : null)
         : state.selected;
     state = ProfilesState(nodes: nodes, selected: selected);
-    _persist();
+    // Removing the LAST node is a deliberate empty — drop the backup so it isn't
+    // resurrected on the next launch (else [ProfileStore.load] would recover it).
+    if (nodes.isEmpty) {
+      ProfileStore.save(state.nodes, state.selected, state.subInfo, true);
+    } else {
+      _persist();
+    }
     // Don't keep tunnelling through a profile the user just deleted: switch the
     // live core to the new selection, or stop it if nothing is left.
     if (removingActive && ref.read(coreControllerProvider).isOn) {
@@ -262,7 +281,8 @@ class ProfilesController extends Notifier<ProfilesState> {
 
   void clear() {
     state = const ProfilesState();
-    _persist();
+    // Deliberate wipe → drop the recovery backup too (else load() restores it).
+    ProfileStore.save(state.nodes, state.selected, state.subInfo, true);
   }
 
   /// Identity of a profile by content (ignoring its display tag), so the same

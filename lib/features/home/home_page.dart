@@ -57,6 +57,7 @@ class HomePage extends ConsumerWidget {
                   const SizedBox(height: 6),
                   const _ExitIpLabel(),
                   const _FenceBadge(),
+                  const _WhitelistBanner(),
                   const _UnblockButton(),
                   const _ProxyModeHint(),
                   const _DesyncHint(),
@@ -140,6 +141,64 @@ class _FenceBadge extends ConsumerWidget {
       );
     }
     return const SizedBox.shrink();
+  }
+}
+
+/// ①-watchdog: the mobile network collapsed to the state IP/SNI allowlist
+/// ("белый список") — RU sites answer but no foreign exit is reachable, so the
+/// tunnel is dark by physics, not by a fixable block. The watchdog stops burning
+/// transport/fp variants and shows this instead of a misleading "blocked" error;
+/// the honest guidance is Wi-Fi or a domestic relay. Amber, prominent (not a
+/// muted hint) because it explains why nothing connects right now.
+class _WhitelistBanner extends ConsumerWidget {
+  const _WhitelistBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final show = ref.watch(coreControllerProvider
+        .select((s) => s.isOn && s.whitelistMode));
+    if (!show) return const SizedBox.shrink();
+    final l = AppLocalizations.of(context);
+    const amber = Color(0xFFE0A53D);
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 320),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: amber.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: amber.withValues(alpha: 0.45)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.public_off_rounded, size: 15, color: amber),
+                const SizedBox(width: 6),
+                Text(l.whitelistModeTitle,
+                    style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: amber)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(l.whitelistModeBody,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 11,
+                    height: 1.35,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.7))),
+          ],
+        ),
+      ),
+    );
   }
 }
 

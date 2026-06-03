@@ -131,9 +131,12 @@ bool shouldActOnNetworkChange({
 /// that dials out to the server. Omitting the xray bridge blacks out XHTTP /
 /// Reality-over-XHTTP the instant the fence engages (H1). Pure + tested.
 List<String> fencePermitPaths(String singBoxExe, String? xrayExe,
-    {required bool xrayAvailable}) {
+    {required bool xrayAvailable, String? awgExe, bool awgAvailable = false}) {
   return [
     singBoxExe,
     if (xrayAvailable && xrayExe != null && xrayExe.isNotEmpty) xrayExe,
+    // The AmneziaWG bridge dials out as its own process too — permit it or the
+    // fence blacks out AmneziaWG the instant it engages (same as xray, H1).
+    if (awgAvailable && awgExe != null && awgExe.isNotEmpty) awgExe,
   ];
 }

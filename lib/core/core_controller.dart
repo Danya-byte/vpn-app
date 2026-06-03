@@ -6,8 +6,11 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
+import 'amnezia_config.dart';
 import 'app_settings.dart';
 import 'cascade.dart';
+import 'censorship_facts.dart';
+import 'censorship_facts_feed.dart';
 import 'clash_api.dart';
 import 'core_paths.dart';
 import 'lifecycle.dart';
@@ -48,6 +51,7 @@ class CoreState {
     this.detail,
     this.logs = const [],
     this.fenceActive = false,
+    this.whitelistMode = false,
   });
 
   final CoreStatus status;
@@ -56,6 +60,10 @@ class CoreState {
   final String? detail; // optional extra (path / core message)
   final List<String> logs;
   final bool fenceActive; // WFP TUN kill-switch fence currently up?
+  // The mobile network collapsed to the state IP/SNI allowlist ("белый список"):
+  // RU sites answer but no foreign exit is reachable. Non-fatal (we stay running,
+  // fail-closed) — a Home banner explains it instead of churning the cascade.
+  final bool whitelistMode;
 
   bool get isBusy =>
       status == CoreStatus.starting || status == CoreStatus.stopping;
@@ -68,6 +76,7 @@ class CoreState {
     Object? detail = _unset,
     List<String>? logs,
     bool? fenceActive,
+    bool? whitelistMode,
   }) {
     return CoreState(
       status: status ?? this.status,
@@ -76,6 +85,7 @@ class CoreState {
       detail: identical(detail, _unset) ? this.detail : detail as String?,
       logs: logs ?? this.logs,
       fenceActive: fenceActive ?? this.fenceActive,
+      whitelistMode: whitelistMode ?? this.whitelistMode,
     );
   }
 }
@@ -136,6 +146,16 @@ class CoreController extends Notifier<CoreState> {
   bool _allTransportsDark =
       false; // last cascade found EVERY family dark at once
   // → looks like an IP/server block, not a per-signature one (fp won't help).
+  // 16KB connection-freeze episode (net4people #490/#546): the node passes a tiny
+  // 204 but stalls real >16KB transfers. Detected by a periodic bulk-through-proxy
+  // probe in the HEALTHY branch (the freeze hides as "healthy") and remedied by a
+  // transport hop off the long TLS stream (battle-tested: reshaping a flow-
+  // mandating Reality node breaks it). Counters reset on the next clean reconnect.
+  int _freezeFails = 0; // consecutive bulk-stall detections (debounce)
+  int _freezeTick = 0; // healthy-tick counter — bulk-probe every Nth (cost)
+  // Whitelist-mode collapse latched (RU up, all foreign dark) — mirrors
+  // state.whitelistMode so we only re-emit the banner/log on a transition.
+  bool _whitelistMode = false;
   bool _adapting = false;
   bool _portConflict =
       false; // core couldn't bind 2080/9090 (another copy holds it)
@@ -225,6 +245,9 @@ class CoreController extends Notifier<CoreState> {
       'geosite-ads',
     ].every((f) => File('$rsDir${Platform.pathSeparator}$f.srs').existsSync());
     SingBoxConfig.clashSecret = _randomSecret();
+    // ②: apply the last-validated ТСПУ-fact feed (desync list, freeze probe) from
+    // disk BEFORE the first connect; a missing/corrupt cache leaves baked defaults.
+    CensorshipFacts.loadCacheSync();
     ref.onDispose(() {
       _proc?.kill();
       _killXray();
@@ -369,6 +392,7 @@ class CoreController extends Notifier<CoreState> {
     final useAuto = settings.autoFailover && autoPool.length >= 2;
     final tunMode = settings.vpnMode == VpnMode.tun;
     final xrayAvailable = File(CorePaths.xray()).existsSync();
+    final awgAvailable = File(CorePaths.awg()).existsSync();
     if (tunMode && !await NativeAdmin.isElevated()) {
       _autoReconnect = false;
       await _failProxy();
@@ -440,6 +464,7 @@ class CoreController extends Notifier<CoreState> {
     _familyByTag = familiesFromConfig(cfg);
     _insecureByTag = insecureTagsFromConfig(cfg);
     if (xrayAvailable) cfg = await _bridgeXray(cfg);
+    if (awgAvailable) cfg = await _bridgeAmnezia(cfg);
     try {
       File(cfgPath).writeAsStringSync(SingBoxConfig.encode(cfg));
     } catch (e) {
@@ -584,9 +609,16 @@ class CoreController extends Notifier<CoreState> {
       version: version,
       error: null,
       detail: null,
+      whitelistMode: false, // fresh (re)connect — re-detect from clean
     );
+    _whitelistMode = false;
     _exitRetries = 0;
     _healthFails = 0;
+    // ②: refresh the ТСПУ-fact feed THROUGH the now-live tunnel (github-raw is
+    // blocked direct in RF). Fire-and-forget; applies to the NEXT build. A newer
+    // doc updates the desync list / freeze probe with no app release.
+    Future.microtask(
+        () => ref.read(censorshipFactsProvider.notifier).refresh());
     // Bringing a TUN up reshuffles routes/adapters → a burst of addr-change
     // events for ~10s. Ignore them so we don't restart the tunnel for its OWN
     // setup churn (the "reconnects every few seconds right after connect" storm).
@@ -606,7 +638,9 @@ class CoreController extends Notifier<CoreState> {
       // condition matches by image, so it covers all xray bridge processes.
       final ok = await NativeAdmin.fenceEngage(fencePermitPaths(
           exe, CorePaths.xray(),
-          xrayAvailable: xrayAvailable));
+          xrayAvailable: xrayAvailable,
+          awgExe: CorePaths.awg(),
+          awgAvailable: awgAvailable));
       _fenceActive = ok;
       state = state.copyWith(fenceActive: ok);
       if (!ok) {
@@ -664,6 +698,60 @@ class CoreController extends Notifier<CoreState> {
     return cfg;
   }
 
+  /// Replace AmneziaWG endpoints with a `socks` outbound dialed by an `awg`
+  /// userspace bridge — the obfuscated WireGuard (jc/jmin/s1-s4/h1-h4) that
+  /// neither sing-box nor xray can speak. Same pattern as [_bridgeXray]: write
+  /// the bridge's wireproxy config, spawn it, and rewrite the endpoint into a
+  /// plain socks outbound on its local SOCKS port. Gated by the caller on the
+  /// awg binary's presence (absent → AmneziaWG stays detect-and-fail).
+  Future<Map<String, dynamic>> _bridgeAmnezia(Map<String, dynamic> cfg) async {
+    final eps = (cfg['endpoints'] as List?) ?? const [];
+    if (eps.isEmpty) return cfg;
+    cfg['outbounds'] ??= <dynamic>[];
+    final outs = cfg['outbounds'] as List;
+    var port = 24300;
+    final keep = <dynamic>[];
+    for (final e in eps) {
+      if (e is! Map || !AmneziaConfig.needsAmnezia(e)) {
+        keep.add(e);
+        continue;
+      }
+      final ini = AmneziaConfig.fromEndpoint(e, port);
+      if (ini == null) {
+        keep.add(e);
+        continue;
+      }
+      final path =
+          '${CorePaths.runtimeDir().path}${Platform.pathSeparator}awg-$port.conf';
+      try {
+        File(path).writeAsStringSync(ini);
+        final p = await Process.start(CorePaths.awg(), ['-c', path],
+            workingDirectory: CorePaths.runtimeDir().path);
+        _xrayProcs.add(p); // all bridge procs are reaped together
+        _recordPid('awg.exe', p.pid);
+        // The endpoint now rides a plain socks proxy on 127.0.0.1:$port, so the
+        // route `final`/rules that referenced its tag still resolve.
+        outs.add({
+          'type': 'socks',
+          'tag': e['tag'] ?? 'wg',
+          'server': '127.0.0.1',
+          'server_port': port,
+          'version': '5',
+        });
+        port++;
+        // endpoint dropped (replaced by the socks outbound above)
+      } catch (_) {
+        keep.add(e); // bridge failed to start — leave it; the core reports it
+      }
+    }
+    if (keep.isEmpty) {
+      cfg.remove('endpoints');
+    } else {
+      cfg['endpoints'] = keep;
+    }
+    return cfg;
+  }
+
   void _killXray() {
     for (final p in _xrayProcs) {
       p.kill();
@@ -698,35 +786,30 @@ class CoreController extends Notifier<CoreState> {
 
   Future<void> _killOrphanCores() async {
     if (!Platform.isWindows) return;
-    String content;
+    // Reap the PIDs we recorded (if core.pids exists) — but then ALWAYS sweep the
+    // ports below, because an orphan from a force-killed / crashed run may not be
+    // in core.pids at all (a prior reap deletes it). The old `if (!exists) return`
+    // skipped the port sweep entirely, so such an orphan held 2080/9090 forever.
     try {
-      if (!_pidFile.existsSync()) return;
-      content = _pidFile.readAsStringSync();
-    } catch (_) {
-      return;
-    }
-    for (final line in const LineSplitter().convert(content)) {
-      final parts = line.split('\t');
-      if (parts.length != 2) continue;
-      final image = parts[0];
-      final pid = int.tryParse(parts[1]);
-      if (pid == null) continue;
-      try {
-        // /FI "IMAGENAME eq ..." ensures we only kill if that PID is still one
-        // of our cores (guards against PID reuse by an unrelated process).
-        await Process.run(_sys32('taskkill.exe'), [
-          '/F',
-          '/PID',
-          '$pid',
-          '/FI',
-          'IMAGENAME eq $image',
-        ]);
-      } catch (_) {}
-    }
-    try {
-      _pidFile.deleteSync();
+      if (_pidFile.existsSync()) {
+        final content = _pidFile.readAsStringSync();
+        for (final line in const LineSplitter().convert(content)) {
+          final parts = line.split('\t');
+          if (parts.length != 2) continue;
+          final image = parts[0];
+          final pid = int.tryParse(parts[1]);
+          if (pid == null) continue;
+          try {
+            // /FI "IMAGENAME eq ..." ensures we only kill if that PID is still one
+            // of our cores (guards against PID reuse by an unrelated process).
+            await Process.run(_sys32('taskkill.exe'),
+                ['/F', '/PID', '$pid', '/FI', 'IMAGENAME eq $image']);
+          } catch (_) {}
+        }
+        _pidFile.deleteSync();
+      }
     } catch (_) {}
-    await _freeCorePorts();
+    await _freeCorePorts(); // ALWAYS — netstat sweep catches unrecorded orphans
   }
 
   // Belt-and-suspenders: if anything (a crash orphan, a second copy) still holds
@@ -848,8 +931,12 @@ class CoreController extends Notifier<CoreState> {
     _degradeStreak = 0;
     _proactiveCooldown = 0;
     // A node switch / new network / fresh connect starts from the user's own
-    // settings again; only the auto-adapt loop keeps its current variant.
-    if (!keepAdapt) _adaptStep = 0;
+    // settings again; only the auto-adapt loop keeps its current variant. The
+    // freeze debounce resets too so we re-detect from clean.
+    if (!keepAdapt) {
+      _adaptStep = 0;
+      _freezeFails = 0;
+    }
     try {
       _hop?.cancel();
       _reconnect?.cancel();
@@ -1167,6 +1254,7 @@ class CoreController extends Notifier<CoreState> {
     if (await _tunnelHealthy()) {
       _healthFails = 0;
       _healthyStreak++;
+      _clearWhitelistMode(); // real traffic flows ⇒ not in whitelist collapse
       // Clear the cascade's tried-set only on SUSTAINED recovery (#6) — the rule
       // lives in the unit-tested [watchdogShouldClearEpisode], not inline here.
       if (watchdogShouldClearEpisode(
@@ -1177,6 +1265,7 @@ class CoreController extends Notifier<CoreState> {
         _allTransportsDark = false;
         _log('auto-adapt: holding — traffic flows (episode cleared)');
       }
+      await _checkFreeze(); // L4: a 204 passes but does >16KB still flow?
       await _checkDegradation(); // L3: hop EARLY if the path is degrading
       return;
     }
@@ -1190,6 +1279,7 @@ class CoreController extends Notifier<CoreState> {
     // EXECUTE the chosen action here.
     final action = await runDarkPath(
       networkUp: _directNetworkUp,
+      foreignReachable: _foreignNetworkUp,
       tryHop: _tryTransportHop, // sets _allTransportsDark as a side effect
       allDark: () => _allTransportsDark,
       leafFamily: _currentLeafFamily,
@@ -1199,6 +1289,23 @@ class CoreController extends Notifier<CoreState> {
       case DarkAction.networkDownBail: // local net down — not a tunnel block
       case DarkAction
           .cascaded: // a transport hop broke through; give it a cycle
+        _clearWhitelistMode(); // a working hop ⇒ foreign is reachable again
+        return;
+      case DarkAction.whitelistMode:
+        // RU answers but every foreign IP is dark → mobile network fell back to
+        // the state allowlist. Cascade/fp cycling is physically futile; stop and
+        // inform (don't disconnect — we stay fail-closed). Latched so the banner
+        // + log fire once per collapse, cleared when real traffic flows again.
+        if (!_whitelistMode) {
+          _whitelistMode = true;
+          state = state.copyWith(whitelistMode: true);
+          _log(
+            'auto-adapt: network collapsed to the state WHITELIST — RU sites '
+            'answer but every foreign IP is dropped (mobile shutdown). No '
+            'foreign exit is reachable; pausing transport/fp cycling. Use Wi-Fi '
+            'or a domestic relay.',
+          );
+        }
         return;
       case DarkAction.stopIpBlock:
         _log(
@@ -1284,6 +1391,72 @@ class CoreController extends Notifier<CoreState> {
     }
   }
 
+  // L4 freeze watch: the 16KB foreign-IP connection-freeze (net4people #490/#546)
+  // lets a tiny 204 through while stalling real >16KB transfers, so it HIDES as a
+  // healthy tunnel. Pull a bulk payload THROUGH the proxy every Nth healthy tick
+  // (cheap) and, on a debounced stall, reshape this SAME node freeze-safe (strip
+  // Vision flow + mux) ONCE before handing off to a transport hop — the decision
+  // order lives in the unit-tested [decideFreeze]. Steps aside during a cascade
+  // episode (single owner). NOTE: like _checkDegradation, the bulk threshold
+  // needs real-world tuning — can't be battle-verified headless.
+  Future<void> _checkFreeze() async {
+    if (_adapting || _restarting || _triedTransports.isNotEmpty) return;
+    if (++_freezeTick % 3 != 0) return; // ~every 54s, not every 18s tick
+    final bulkOk = await _bulkThroughOk();
+    if (!state.isOn) return; // raced a stop while probing
+    _freezeFails = bulkOk ? 0 : _freezeFails + 1;
+    if (decideFreeze(bulkOk: bulkOk, freezeFails: _freezeFails) ==
+        FreezeAction.none) {
+      return;
+    }
+    _freezeFails = 0;
+    // Battle-tested (live Reality+Vision server, 2026-06): a Reality server that
+    // mandates xtls-rprx-vision REJECTS a stripped-flow client, so "reshape the
+    // same node" turns a throttle into an outage. The remedy that works is to
+    // LEAVE the long TCP-TLS stream — hop to XHTTP (sub-16KB request pairs) or
+    // QUIC (Hysteria2/TUIC, not a TCP-TLS connection). planCascade already
+    // orders by L4 diversity, so the hop lands there.
+    _log(
+      'auto-adapt: 16KB connection-freeze suspected (small probes pass, bulk '
+      'transfer stalls) → hopping off the long TLS stream to XHTTP/QUIC',
+    );
+    if (!await _tryTransportHop()) {
+      _log(
+        'auto-adapt: freeze suspected but no alternative transport in the pool '
+        '— a single Vision node can\'t be freeze-fixed client-side; import an '
+        'XHTTP/Hysteria2 node or another server.',
+      );
+    }
+  }
+
+  // Pull a bulk payload THROUGH the proxy to expose a 16KB connection-freeze a
+  // tiny 204 can't see. Full body in time ⇒ healthy; a mid-stream STALL (started,
+  // then no data) ⇒ frozen. A hard error is inconclusive (could be the target) ⇒
+  // treated as OK so a transient miss never false-flags a freeze. The probe host
+  // + "arrived" threshold come from the ТСПУ-fact feed (②), defaulting baked.
+  Future<bool> _bulkThroughOk() async {
+    final facts = CensorshipFacts.active;
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 6)
+      ..findProxy = (_) =>
+          'PROXY ${SingBoxConfig.mixedListen}:${SingBoxConfig.mixedPort}';
+    try {
+      final req = await client.getUrl(Uri.parse(facts.freezeProbeUrl));
+      final resp = await req.close().timeout(const Duration(seconds: 9));
+      var got = 0;
+      await for (final chunk in resp.timeout(const Duration(seconds: 9))) {
+        got += chunk.length;
+      }
+      return got >= facts.freezeThresholdKb * 1024; // got the bulk ⇒ no freeze
+    } on TimeoutException {
+      return false; // started but stalled mid-stream ⇒ freeze signature
+    } catch (_) {
+      return true; // inconclusive (target/network) — don't false-flag a freeze
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   // Does real traffic flow through the local proxy right now?
   Future<bool> _tunnelHealthy() async {
     final client = HttpClient()
@@ -1324,6 +1497,47 @@ class CoreController extends Notifier<CoreState> {
     } catch (_) {
       return false;
     }
+  }
+
+  // Benign foreign control IPs for the whitelist-mode probe: public DNS resolvers
+  // that aren't wholesale IP-blocked in RF under normal conditions, so a raw TCP
+  // SYN to :443 gets a SYN-ACK — UNLESS the mobile network collapsed to the state
+  // allowlist, which drops every foreign SYN. ALL must be dark to latch whitelist-
+  // mode (one reachable host ⇒ not a collapse), so a single IP-block can't
+  // false-positive.
+  static const List<String> _foreignProbeIps = [
+    '8.8.8.8', // Google Public DNS
+    '9.9.9.9', // Quad9
+    '208.67.222.222', // OpenDNS
+  ];
+
+  // Is ANY foreign host reachable by a RAW TCP dial (direct, outside the tunnel)?
+  // A raw connect — NOT a <16KB 204, which the connection-freeze can let through —
+  // distinguishes a whitelist collapse (every foreign SYN dropped) from a normal
+  // node block (foreign still reachable, the node isn't). Returns on the first
+  // success; false only when every probe IP is dark. Runs only on the dark path
+  // (after ~54s tunnel-dark), so the direct dials stay infrequent + benign.
+  Future<bool> _foreignNetworkUp() async {
+    for (final ip in _foreignProbeIps) {
+      try {
+        final s = await Socket.connect(
+          ip,
+          443,
+          timeout: const Duration(seconds: 4),
+        );
+        s.destroy();
+        return true;
+      } catch (_) {
+        // try the next control IP
+      }
+    }
+    return false;
+  }
+
+  void _clearWhitelistMode() {
+    if (!_whitelistMode) return;
+    _whitelistMode = false;
+    state = state.copyWith(whitelistMode: false);
   }
 
   // The active leaf's refined anti-DPI family (for the fp-no-op decision) —

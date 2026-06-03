@@ -52,6 +52,7 @@ bool watchdogShouldClearEpisode({
 /// What the dark-path watchdog decided to do — see [runDarkPath].
 enum DarkAction {
   networkDownBail, // #1 gate: local network is down, not a tunnel block
+  whitelistMode, // RU reachable but ALL foreign IPs dark → state-allowlist collapse
   cascaded, // a restart-free transport hop broke through
   stopIpBlock, // every family dark at once → IP/server block (fp can't help)
   stopFpNoop, // surviving leaf is Reality/QUIC → fp/fragment/mux is a no-op
@@ -68,11 +69,16 @@ enum DarkAction {
 ///  1. the network gate runs FIRST and, when down, [tryHop] is NEVER invoked
 ///     (#1 — a downed Wi-Fi/captive portal must not trigger a cascade or an
 ///     fp-restart; the test asserts tryHop was not called);
-///  2. a successful hop short-circuits before any fp logic;
-///  3. an IP-block stop (every family dark) and an fp-no-op stop (Reality/QUIC)
+///  2. the whitelist gate runs next: RU answers but EVERY foreign IP is dark →
+///     the mobile network collapsed to the state IP/SNI allowlist, so no foreign
+///     exit is physically reachable — hopping transports/fp is futile, stop and
+///     inform WITHOUT calling [tryHop] (the test asserts tryHop was not called);
+///  3. a successful hop short-circuits before any fp logic;
+///  4. an IP-block stop (every family dark) and an fp-no-op stop (Reality/QUIC)
 ///     both precede an fp-restart — so we never burn a restart that can't help.
 Future<DarkAction> runDarkPath({
   required Future<bool> Function() networkUp,
+  required Future<bool> Function() foreignReachable,
   required Future<bool> Function() tryHop,
   required bool Function() allDark,
   required Future<String?> Function() leafFamily,
@@ -81,6 +87,11 @@ Future<DarkAction> runDarkPath({
   if (!await networkUp()) {
     return DarkAction.networkDownBail; // #1 GATE, before the hop
   }
+  // Whitelist-mode gate, BEFORE the cascade: a raw foreign reach (not a <16KB
+  // 204, which the 16KB-freeze can let through) — when every foreign control IP
+  // is dark while RU is up, the network fell back to the allowlist and cascading
+  // is physically futile.
+  if (!await foreignReachable()) return DarkAction.whitelistMode;
   if (await tryHop()) return DarkAction.cascaded;
   if (allDark()) {
     return DarkAction.stopIpBlock; // tryHop set this as a side effect
@@ -101,6 +112,39 @@ bool familyResistsFpCycling(String? family) =>
         family == 'hysteria2' ||
         family == 'hysteria' ||
         family == 'tuic');
+
+/// What the 16KB-freeze watch decided — see [decideFreeze].
+enum FreezeAction {
+  none, // bulk flows (or not yet debounced) — hold
+  hop, // sustained freeze → hop to a transport the volume-rule doesn't policed
+}
+
+/// The 2025+ "connection-freeze" (net4people/bbs #490/#546): any single TCP
+/// connection to a FOREIGN datacenter IP carrying TLS 1.3 is silently stalled
+/// once it crosses ~16KB / ~25 packets — degrading even VLESS+Reality+Vision on
+/// :443. It HIDES as a healthy tunnel because a tiny generate_204 (<16KB) still
+/// passes; only a real >16KB transfer stalls. So it is judged in the watchdog's
+/// HEALTHY branch from a periodic bulk-through-proxy probe — never the dark path.
+/// Decision is PURE (unit-tested); the controller owns the counters + the I/O.
+///  • bulk flows  → [none] (genuinely healthy).
+///  • bulk stalls (after [freezeFails] ≥ 2, debounce vs a one-off blip) → [hop]
+///    to a DIFFERENT transport. Battle-tested correction (against a live
+///    Reality+Vision server, 2026-06): "reshape the SAME node freeze-safe"
+///    (strip xtls-rprx-vision flow + mux) is REJECTED by a Reality server that
+///    mandates the flow — it would turn a throttle into a full outage. The fix
+///    that actually defeats the volumetric rule is to LEAVE the long TCP-TLS
+///    stream: XHTTP splits into sub-16KB request/response pairs, and QUIC
+///    (Hysteria2/TUIC) isn't a TCP-TLS connection at all. The cascade's
+///    [planCascade] already orders candidates by L4 diversity, so the hop lands
+///    on exactly those.
+FreezeAction decideFreeze({
+  required bool bulkOk,
+  required int freezeFails,
+}) {
+  if (bulkOk) return FreezeAction.none;
+  if (freezeFails < 2) return FreezeAction.none;
+  return FreezeAction.hop;
+}
 
 /// Classify each proxy outbound by its true anti-DPI FAMILY (signature) — keyed
 /// by tag (== Clash proxy name) — because the Clash API's raw `type` is too

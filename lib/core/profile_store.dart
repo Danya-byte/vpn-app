@@ -13,21 +13,48 @@ class ProfileStore {
   static File get _file => File(
       '${overrideDir ?? CorePaths.runtimeDir().path}${Platform.pathSeparator}profiles.json');
 
+  // Mirror of the last NON-EMPTY store. If the main file ever reads back empty
+  // (an unclean shutdown / a transient empty-load that got persisted / a crash
+  // mid-write) we recover from here instead of silently losing every profile —
+  // the exact "my configs vanished" data loss this guards against. A DELIBERATE
+  // clear / last-node removal drops this backup (dropBackup:true) so the empty
+  // state genuinely sticks.
+  static File get _bakFile => File(
+      '${overrideDir ?? CorePaths.runtimeDir().path}${Platform.pathSeparator}profiles.bak.json');
+
   static ({
     List<ParsedNode> nodes,
     String? selected,
     Map<String, SubInfo> subInfo
   }) load() {
+    final ({
+      List<ParsedNode> nodes,
+      String? selected,
+      Map<String, SubInfo> subInfo
+    }) empty = (nodes: <ParsedNode>[], selected: null, subInfo: const {});
+    var main = empty;
     try {
       final f = _file;
-      if (!f.existsSync()) {
-        return (nodes: <ParsedNode>[], selected: null, subInfo: const {});
-      }
-      return decode(f.readAsStringSync()) ??
-          (nodes: <ParsedNode>[], selected: null, subInfo: const {});
+      if (f.existsSync()) main = decode(f.readAsStringSync()) ?? empty;
     } catch (_) {
-      return (nodes: <ParsedNode>[], selected: null, subInfo: const {});
+      // fall through to the backup
     }
+    if (main.nodes.isNotEmpty) return main;
+    // Main is empty/missing/corrupt — recover from the backup if it has nodes.
+    try {
+      final b = _bakFile;
+      if (b.existsSync()) {
+        final bak = decode(b.readAsStringSync());
+        if (bak != null && bak.nodes.isNotEmpty) {
+          // Heal the main file so the next launch is clean.
+          save(bak.nodes, bak.selected, bak.subInfo);
+          return bak;
+        }
+      }
+    } catch (_) {
+      // no usable backup
+    }
+    return main;
   }
 
   /// Parse a store-envelope JSON string into nodes + selection + subInfo, or null
@@ -98,11 +125,19 @@ class ProfileStore {
   }
 
   static void save(List<ParsedNode> nodes, String? selected,
-      [Map<String, SubInfo> subInfo = const {}]) {
+      [Map<String, SubInfo> subInfo = const {}, bool dropBackup = false]) {
     try {
       // Atomic (temp+rename) so a crash mid-write can't truncate the store and
       // lose every profile; guarded so a write failure can't crash a UI handler.
       CorePaths.atomicWrite(_file.path, encode(nodes, selected, subInfo));
+      // Keep a backup of the last NON-EMPTY store for [load]'s recovery. A
+      // deliberate clear / last-node removal passes dropBackup so the empty
+      // state isn't resurrected on the next launch.
+      if (dropBackup) {
+        if (_bakFile.existsSync()) _bakFile.deleteSync();
+      } else if (nodes.isNotEmpty) {
+        CorePaths.atomicWrite(_bakFile.path, encode(nodes, selected, subInfo));
+      }
     } catch (_) {}
   }
 }

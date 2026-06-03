@@ -1,7 +1,7 @@
 # Kill-switch leak-test harness (run on REAL Windows hardware).
 #
-# Automates the objective part of PREPROD-CHECKLIST §2: it probes egress on the
-# PHYSICAL NIC, kills the core to simulate a crash, and prints a PASS/FAIL verdict
+# Automates the objective part of the kill-switch leak test: it probes egress on
+# the PHYSICAL NIC, kills the core to simulate a crash, and prints a PASS/FAIL verdict
 # — instead of you eyeballing a ping window. You still drive the app's connect
 # (the app needs UAC for TUN); the script handles the probe + kill + verdict.
 #

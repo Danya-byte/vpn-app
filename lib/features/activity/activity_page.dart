@@ -769,6 +769,40 @@ class _PoliciesViewState extends ConsumerState<_PoliciesView> {
   }
 }
 
+/// ③ — "X of Y alive" pool-health badge. Green when every member answers, amber
+/// when some are dark, red when the whole pool is dead (the moment to import a
+/// fresh subscription). Tooltip names it for accessibility.
+class _AliveChip extends StatelessWidget {
+  const _AliveChip({required this.alive, required this.total});
+
+  final int alive;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = alive == 0
+        ? Theme.of(context).colorScheme.error
+        : (alive == total ? const Color(0xFF4ADE80) : Colors.orange);
+    return Tooltip(
+      message: AppLocalizations.of(context).policyAlive,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.monitor_heart_outlined, size: 11, color: color),
+          const SizedBox(width: 3),
+          Text('$alive/$total',
+              style: TextStyle(
+                  fontSize: 9.5, fontWeight: FontWeight.w700, color: color)),
+        ]),
+      ),
+    );
+  }
+}
+
 class _GroupCard extends ConsumerWidget {
   const _GroupCard(
       {required this.group,
@@ -788,6 +822,12 @@ class _GroupCard extends ConsumerWidget {
     final isAuto = group.type == 'URLTest';
     // Optimistic: show the just-tapped member as active immediately.
     final now = ref.watch(_pendingPickProvider)[group.name] ?? group.now;
+    // ③ pool-health at a glance: how many members answered the 204-through-proxy
+    // probe (alive) vs total. Surfaces silent node death — the #1 churn driver —
+    // without the user pinging each one. A positive warm delay == alive; null/0 ==
+    // dead or not-yet-probed (the one-shot auto-ping fills these in on open).
+    final total = group.all.length;
+    final alive = group.all.where((m) => (delays[m] ?? 0) > 0).length;
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(
@@ -815,6 +855,10 @@ class _GroupCard extends ConsumerWidget {
                         fontWeight: FontWeight.w700,
                         color: scheme.onSurface.withValues(alpha: 0.55))),
               ),
+              if (!preview && total > 1) ...[
+                const SizedBox(width: 6),
+                _AliveChip(alive: alive, total: total),
+              ],
               const Spacer(),
               // Ping every member (fan out the warm /delay probes). Hidden in the
               // disconnected preview — there's no core to probe against.

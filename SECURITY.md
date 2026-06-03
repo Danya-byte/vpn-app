@@ -63,12 +63,13 @@ Pre-1.0: only the latest tagged release (and `main`) receive security fixes.
 
 - The **TUN WFP kill-switch fence** is opt-in and experimental; it has not been
   leak-tested on real hardware across adapter/sleep/competing-VPN scenarios.
-  Verify before relying on it. See `docs/PREPROD-CHECKLIST.md`.
+  Verify before relying on it (`tool/leak-test.ps1` automates the egress probe).
 - **System-proxy mode** has no firewall fence and can leak DNS outside the tunnel;
   prefer TUN mode + the fence for a hostile network.
 - **Distribution where GitHub is blocked** is unsolved: the in-app update *check*
   works through the tunnel, but downloading the release still needs the tunnel to
   cover your browser or a mirror.
-- Releases are only safe once **code-signed**; an unsigned build trips SmartScreen
-  and is itself a supply-chain risk. The release CI refuses to publish a tagged
-  build without a signing cert.
+- Releases ship **unsigned**; integrity rests on the published **SHA-256** over
+  open-source, inspectable builds (verify the hash against the release page), not
+  on an Authenticode cert (which only suppresses the SmartScreen prompt). An
+  unsigned build trips SmartScreen once — click *More info → Run anyway*.

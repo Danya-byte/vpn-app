@@ -1,13 +1,10 @@
-# Release CI — builds the Windows app + installer, hashes, and (if a signing cert
-# secret is present) Authenticode-signs everything, then attaches it to a GitHub
-# Release. This is production-blocker #1: an UNSIGNED binary trips SmartScreen/AV
-# and — distributed where GitHub is blocked — is itself a supply-chain vector.
+# Release CI — builds the Windows app + installer, hashes it, and attaches the
+# artifacts to a GitHub Release on a version tag.
 #
-# To enable signing, add repo secrets:
-#   VPNAPP_SIGN_PFX_BASE64  = base64 of your code-signing .pfx  (certutil -encode / [Convert]::ToBase64String)
-#   VPNAPP_SIGN_PASS        = the .pfx password
-# Without them the build still runs (UNSIGNED) so you can test artifacts; a TAGGED
-# release REQUIRES the cert (-RequireSigning) so you never publish unsigned.
+# Ships UNSIGNED, on purpose: this is open-source with public releases, so the
+# published .sha256 is the integrity check (Authenticode only suppresses the
+# SmartScreen prompt — a UX nicety, not a security property, and not worth a paid
+# cert for an OSS tool). Users verify the SHA-256 against the release page.
 #
 # Reproducibility caveat (honest): Flutter Windows builds are NOT bit-for-bit
 # reproducible today. We get as close as practical by pinning the Flutter version
@@ -19,15 +16,13 @@ name: release
 on:
   push:
     tags: ['v*'] # v1.2.3 → a real release
-  workflow_dispatch: {} # manual run → unsigned test artifacts
+  workflow_dispatch: {} # manual run → test artifacts (no release)
 
 permissions:
   contents: write # create the Release + upload assets
 
 env:
   FLUTTER_VERSION: '3.24.5' # TODO: pin to the exact version you build with
-  # secrets can't be read in step-level `if:` — surface presence as a plain flag.
-  HAS_CERT: ${{ secrets.VPNAPP_SIGN_PFX_BASE64 != '' }}
 
 jobs:
   windows:
@@ -54,32 +49,11 @@ jobs:
         shell: pwsh
         run: ./tool/fetch-cores.ps1 -IncludeXray
 
-      # Decode the signing cert from the secret into a temp .pfx so package.ps1 can
-      # use it. Skipped entirely when no cert secret is configured.
-      - name: Prepare signing cert
-        if: env.HAS_CERT == 'true'
-        shell: pwsh
-        env:
-          PFX_B64: ${{ secrets.VPNAPP_SIGN_PFX_BASE64 }}
-          PFX_PASS: ${{ secrets.VPNAPP_SIGN_PASS }}
-        run: |
-          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
-          "VPNAPP_SIGN_PFX=$pfx"     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "VPNAPP_SIGN_PASS=$env:PFX_PASS" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      # package.ps1 does the rest: build (version/commit-stamped) → bundle cores +
-      # license/notices → sign (if VPNAPP_SIGN_PFX set) → zip + .sha256 → installer.
-      # On a real (cert-present) run, -RequireSigning makes a missing cert FAIL.
+      # package.ps1: build (version/commit-stamped) → bundle cores + license/notices
+      # → zip + .sha256 → installer.
       - name: Build + package
         shell: pwsh
-        run: |
-          $isTag = '${{ github.ref }}'.StartsWith('refs/tags/')
-          if ($isTag -and $env:HAS_CERT -ne 'true') {
-            throw 'Refusing to build a TAGGED release without a signing cert. Set the VPNAPP_SIGN_PFX_BASE64 + VPNAPP_SIGN_PASS secrets, or use a workflow_dispatch run for UNSIGNED test artifacts. Never publish unsigned.'
-          }
-          if ($env:HAS_CERT -eq 'true') { ./tool/package.ps1 -RequireSigning }
-          else { ./tool/package.ps1 }
+        run: ./tool/package.ps1
 
       - uses: actions/upload-artifact@v4
         with:
@@ -90,11 +64,10 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-      # Attach to the GitHub Release on a tag push (skipped on manual runs).
-      # Belt-and-suspenders with the build-step throw above: only ever publish
-      # when a cert is present, so an unsigned binary can never reach a release.
+      # Attach to the GitHub Release on a tag push (skipped on manual runs). The
+      # .sha256 ships alongside so users can verify the download.
       - name: Publish release assets
-        if: startsWith(github.ref, 'refs/tags/') && env.HAS_CERT == 'true'
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |

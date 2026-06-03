@@ -1,0 +1,31 @@
+1.0.0 (03.06.26)
+
+- One-tap connect with a live exit-IP check, latency, and a traffic graph.
+- Two VPN modes: system proxy (no admin) or TUN (captures every app, including UDP).
+- Smart routing: Russian and private destinations go direct, the rest through the tunnel; ad/tracker blocking on by default.
+- Import anything: share links (vless/vmess/trojan/ss/hysteria2/tuic/socks/anytls), base64 subscriptions, sing-box JSON, Clash/Clash.Meta YAML, WireGuard .conf, QR images, deep links, and drag-and-drop.
+- Scan a QR shown on screen (e.g. in Telegram Desktop) — no camera needed.
+- Preview a server (protocol, address, SNI, insecure badge) before connecting to an external link or QR; consent before fetching a subscription.
+- Anti-DPI: per-handshake uTLS fingerprint, TLS ClientHello fragmentation, and out-of-the-box DPI-desync for throttled sites with no server.
+- Transport cascade auto-hops Reality / Hysteria2 / XHTTP by true signature when one is blocked, and moves proactively before a path is fully cut.
+- Recognises the two newest blocks: a "connection freeze" that stalls big transfers while small ones pass (auto-switches to a transport the freeze can't reach — XHTTP or Hysteria2 — on the same server), and mobile "whitelist mode", where it stops burning retries and tells you plainly that only Russian sites are reachable.
+- Native Telegram unblock: Telegram messaging and calls (incl. voice/video over UDP) are routed through the tunnel by IP range and domain, so they keep working where Russia blocks Telegram directly (calls need TUN mode).
+- Self-updating censorship facts: the throttled-site list and detection thresholds refresh themselves through the tunnel on connect, so a new blocking wave is handled without waiting for an app update (data only, validated and clamped — never code).
+- Server-pool health at a glance: each group shows how many of its servers are actually live (answered a real through-tunnel check), so a silently-dead node is obvious instead of a mystery.
+- Auto-failover across all your nodes (combine transports for resilience).
+- AmneziaWG support via a userspace bridge (drop core/windows/awg.exe).
+- XHTTP / Reality-over-XHTTP via a bundled xray bridge.
+- WFP kill-switch (fail-closed TUN) covering the xray and AmneziaWG bridges; fails closed on give-up with an "unblock" button.
+- Warning before connecting to a server that disables certificate checks.
+- Built-in Mbps speed test through the tunnel.
+- Generate your own VLESS+Reality (+Hysteria2) server in-app: keys, client link, and a one-paste VPS setup script.
+- Activity: live connections, logs, diagnostics, per-server ping, and live policy switching.
+- System tray, close-to-tray, launch-at-startup, and seamless reconnect on network change / wake.
+- Connection doctor proves traffic flows through the tunnel (tool/verify_store.dart).
+- English / Russian, auto-detected from the OS.
+- Releases ship unsigned with a published SHA-256 to verify the download.
+- Fix: connects where GitHub is blocked (rule-sets bundled, no startup download).
+- Fix: RU sites load on IPv6-less networks (IPv4-only DNS, no v6 TUN leak).
+- Fix: a long existing system proxy is no longer wiped when restoring on disconnect.
+- Fix: every file in a multi-file drop is imported, not just the first.
+- Fix: deep links containing a literal % no longer break on import.

@@ -4,7 +4,7 @@
 ;
 ; Build:  iscc tool\installer.iss            (uses build\...\Release as source)
 ;         iscc /DAppVer=1.0.0 tool\installer.iss
-; Sign the resulting installer too (see tool/package.ps1 for the signing hook).
+; Ships unsigned (open-source; the release .sha256 is the integrity check).
 
 #ifndef AppVer
   #define AppVer "1.0.0"

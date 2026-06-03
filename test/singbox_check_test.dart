@@ -97,4 +97,5 @@ void main() {
     SingBoxConfig.dnsServer = '77.88.8.8'; // restore the default for other tests
     expect(await check(cfg, 'dns_custom'), isNull);
   }, skip: hasCore ? false : 'sing-box.exe not bundled');
+
 }
