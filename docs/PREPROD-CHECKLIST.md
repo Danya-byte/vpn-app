@@ -8,11 +8,11 @@ Status legend: ✅ done · 🔧 code-ready, needs you · ❌ needs you/third-par
 
 | # | Item | Status |
 |---|------|--------|
-| 1 | Code-signing + CI | 🔧 CI written + **tagged build now REFUSES to publish unsigned**; **you add the cert secret** |
-| 2 | Kill-switch hardened | ✅ BLOCK-on-fail implemented + tested; 🔧 **default-ON only after the leak-test** (leak-test = you) |
-| 3 | Native click-test | ❌ you (real Windows) — checklist below |
+| 1 | Code-signing + CI | 🔧 CI + unsigned-publish refusal + **dev-cert tooling** (`tool/make-dev-cert.ps1`) to exercise the pipeline; **you add the real cert** |
+| 2 | Kill-switch hardened | ✅ BLOCK-on-fail; 🔧 **default-ON after the leak-test** (`tool/leak-test.ps1` automates the verdict; you run it on HW) |
+| 3 | Native click-test | 🔧 first-run flow now **automated** (`first_run_widget_test`); tray/UAC/deeplink still you — checklist below |
 | 4 | H3 default-mode decision | ✅ implemented — first-run protection chooser (Option A); see §4 |
-| 5 | External security audit | ❌ third party (Cure53 / Radically Open Security) |
+| 5 | External security audit | 🔧 **scope/threat-model written** (`docs/THREAT-MODEL.md`); engaging the third party = you |
 
 ---
 
@@ -125,8 +125,10 @@ the no-UAC LocalSystem service (M6) ships.
 
 ## 5. External audit
 Before a wide public release, a third-party review (Cure53 / ROS) of the safety
-perimeter (kill-switch, import gate, Clash-API auth, native runner). I can prep the
-threat-model + scope doc when you're ready.
+perimeter (kill-switch, import gate, Clash-API auth, native runner). **The scope +
+threat-model doc is written: `docs/THREAT-MODEL.md`** (assets, trust boundaries,
+attack-surface table, the highest-value review targets, out-of-scope). Hand it to
+the auditor as the engagement scope; selecting + paying the firm is on you.
 
 ---
 
