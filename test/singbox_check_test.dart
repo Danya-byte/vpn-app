@@ -51,4 +51,50 @@ void main() {
   test('m0Local() passes real `sing-box check`', () async {
     expect(await check(SingBoxConfig.m0Local(), 'm0'), isNull);
   }, skip: hasCore ? false : 'sing-box.exe not bundled');
+
+  // #9: the TUN now captures IPv6 too (ULA address) so v6 can't leak direct —
+  // verify the dual-family address list is accepted by the real core.
+  test('withTun (IPv4+IPv6 capture) passes real `sing-box check`', () async {
+    final cfg = SingBoxConfig.withTun(SingBoxConfig.desyncOnly());
+    final tun = (cfg['inbounds'] as List)
+        .cast<Map>()
+        .firstWhere((i) => i['type'] == 'tun');
+    expect((tun['address'] as List).any((a) => '$a'.contains(':')), isTrue);
+    expect(await check(cfg, 'tun_v6'), isNull);
+  }, skip: hasCore ? false : 'sing-box.exe not bundled');
+
+  // #24: Brutal up_mbps/down_mbps are real hysteria2 fields — verify a tuned
+  // outbound validates against the core (catches a field-name drift).
+  test('hysteria2 with Brutal up/down passes real `sing-box check`', () async {
+    final cfg = {
+      'log': {'level': 'warn'},
+      'outbounds': [
+        {
+          'type': 'hysteria2',
+          'tag': 'hy2',
+          'server': '1.2.3.4',
+          'server_port': 443,
+          'password': 'pw',
+          'tls': {'enabled': true, 'insecure': true},
+        },
+        {'type': 'direct', 'tag': 'direct'},
+      ],
+      'route': {'final': 'hy2'},
+    };
+    final tuned = SingBoxConfig.tuneHysteria2(cfg, 50, 200);
+    final hy2 = (tuned['outbounds'] as List)
+        .cast<Map>()
+        .firstWhere((o) => o['type'] == 'hysteria2');
+    expect(hy2['up_mbps'], 50);
+    expect(hy2['down_mbps'], 200);
+    expect(await check(tuned, 'hy2_brutal'), isNull);
+  }, skip: hasCore ? false : 'sing-box.exe not bundled');
+
+  // #19: a custom DoH resolver must still produce a config the core accepts.
+  test('a custom DoH resolver passes real `sing-box check`', () async {
+    SingBoxConfig.dnsServer = '1.1.1.1';
+    final cfg = SingBoxConfig.desyncOnly();
+    SingBoxConfig.dnsServer = '77.88.8.8'; // restore the default for other tests
+    expect(await check(cfg, 'dns_custom'), isNull);
+  }, skip: hasCore ? false : 'sing-box.exe not bundled');
 }
