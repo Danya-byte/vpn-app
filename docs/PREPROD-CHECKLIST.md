@@ -35,6 +35,12 @@ The WFP fence compiles + the permit-list is unit-tested (incl. xray, H1), but
 "no egress on the physical NIC when the core dies" has never been observed. Do this
 once; only flip the default to ON after it passes.
 
+> **Automated harness:** `tool/leak-test.ps1` does the objective part for you —
+> probes egress on the physical NIC, kills the core, and prints PASS/FAIL. You
+> still drive the app's connect (TUN needs UAC); run it from an admin shell once
+> per transport (Reality, then XHTTP — it also kills `xray.exe`). The manual steps
+> below remain the source of truth for the tray/close-restore checks.
+
 1. Settings → **TUN mode** + enable **kill-switch** → "Restart as administrator".
 2. Connect to a **Reality** node. Confirm traffic flows (exit IP ≠ your real IP).
 3. In `cmd`: `ping 8.8.8.8 -t` (a continuous egress probe on the physical NIC).
@@ -184,24 +190,40 @@ security/features workflow audit. ✅ fixed-in-code · 📝 documented decision/
   172.18/15 IP scan is belt-and-suspenders. The added IPv6 address keeps an IPv4
   address too, so the fallback is unaffected.
 
-### Features (prioritized roadmap)
-- ✅ **#4 first-run protection chooser** (was both prod-#4 and a feature ask) — shipped.
-- 🗺️ **#16 cross-platform / mobile (P0)** — Android/iOS is the strategic ceiling; large,
-  separate milestone.
-- 🗺️ **#17 bundled default nodes + true "just connect" (P0)** — partially served today
-  by no-server desync mode + `ServerGen`; bundling live nodes needs infra (can't ship
-  secrets). First-run chooser (#4) improves onboarding now.
-- 🗺️ **#18 auto-update apply (P1)** — surfaces version + link today; full self-replace
+### Features
+- ✅ **#4 first-run protection chooser** — shipped (`first_run_setup.dart`).
+- ✅ **#19 custom DNS resolver (P1)** — the hardcoded DoH (`77.88.8.8`) is now a
+  `SingBoxConfig.dnsServer` static, overridden from a Settings → Advanced field;
+  default unchanged (RF-safe Yandex). The riskier *routing-rule* editor stays
+  roadmap (a bad rule breaks the tunnel — needs a guarded builder UI).
+- ✅ **#24 Hysteria2 Brutal up/down tuning (P2)** — Settings → Advanced line-speed
+  fields stamp `up_mbps`/`down_mbps` onto hysteria2 outbounds (0 = auto); unit-tested.
+- 📝 **#21 profile sync/WebDAV** — **declined as in-app WebDAV**: it would store a
+  cloud-account password in plaintext `settings.json` (higher value than the VPN
+  secrets there, against the just-hardened perimeter). The use case is already
+  served more safely by export/import into a user's own synced folder
+  (Dropbox/Nextcloud) with zero credential storage. Revisit only with Windows
+  Credential Manager (native) storage.
+- 🗺️ **#16 cross-platform / mobile (P0)** — Android/iOS is the strategic ceiling;
+  needs platform VPN-service code (VpnService / NEPacketTunnelProvider) + store
+  setup. A multi-week milestone, not a session task.
+- 🗺️ **#17 bundled default nodes + "just connect" (P0)** — partially served by
+  no-server desync mode + `ServerGen` + the #4 chooser; bundling live nodes needs
+  server infra (can't ship secrets).
+- 📝 **#18 auto-update apply (P1)** — surfaces version + link today; full self-replace
   declined on security grounds (auto-running a tunnel-downloaded exe = the MITM vector
-  the audit guards against). Revisit only post code-signing + signature verification.
-- 🗺️ **#19 in-app routing/DNS editor (P1)** · **#20 camera/screen-region QR** ·
-  **#21 profile sync/WebDAV** · **#22 AmneziaWG-obfs + MTProto via a bridge binary**
-  (can't be native — sing-box/xray have no such outbound, like AmneziaWG) ·
-  **#23 metacubexd/yacd dashboard** (partly served by Activity+Policies) ·
-  **#24 Hysteria2 Brutal up/down tuning** — all P2 roadmap.
+  the audit guards against). Revisit post code-signing + signature verification.
+- 🗺️ **#20 camera/screen-region QR** — native screen-capture/camera, large.
+- 📝 **#22 AmneziaWG-obfs + MTProto** — can't be native: sing-box/xray have no such
+  outbound (like AmneziaWG needs `amneziawg-go`); needs a separate bundled bridge
+  binary. Telegram already works through the main tunnel.
+- 🗺️ **#23 metacubexd/yacd dashboard** — partly served by Activity + Policies tabs;
+  a full embedded dashboard is a heavy webview add.
 
-### Net this session
+### Net
 Every confirmed prod/security/bug finding is **fixed in code or a documented
-decision**; remaining opens are **yours** (commit+tag, cert, hardware leak-test,
-click-test, external audit) or **roadmap features**. Tests: 154 pass · `flutter
-analyze` clean · native compiles (link needs the app closed).
+decision**; the three top completable features (#4, #19, #24) are **shipped**; the
+rest are **genuinely external** (#1 push/cert/leak-test/click-test/external audit),
+**declined-for-security** (#18, #21, #22-native), or **large strategic milestones**
+(#16, #20, #23). Tests: 160 pass · `flutter analyze` clean · native compiles
+(link needs the app closed) · `tool/leak-test.ps1` added to automate §2.

@@ -357,6 +357,9 @@ class CoreController extends Notifier<CoreState> {
     final node = profiles.selectedNode;
     final settings = ref.read(settingsProvider);
     SingBoxConfig.logLevel = settings.logLevel; // user-chosen verbosity
+    // Custom DoH resolver, or the RF-safe default (Yandex) when unset.
+    SingBoxConfig.dnsServer =
+        settings.customDns.isEmpty ? '77.88.8.8' : settings.customDns;
     final simpleNodes = profiles.nodes.where((n) => !n.isConfig).toList();
     // Auto-failover + the watchdog cascade run UNATTENDED — they must never
     // silently route through a cert-unvalidated (MITM-able) node. The auto pool
@@ -427,6 +430,10 @@ class CoreController extends Notifier<CoreState> {
         forceApps: settings.forceVpnApps,
       );
     }
+    // Hysteria2 Brutal bandwidth caps (no-op unless the user set them AND a
+    // hysteria2 outbound exists). One choke point covers every build path.
+    cfg = SingBoxConfig.tuneHysteria2(
+        cfg, settings.hy2UpMbps, settings.hy2DownMbps);
     // Snapshot the TRUE per-outbound families for the cascade BEFORE the xray
     // bridge rewrites XHTTP outbounds into `socks` (which would otherwise erase
     // the XHTTP↔Reality distinction). See [familiesFromConfig].

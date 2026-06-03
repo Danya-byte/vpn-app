@@ -664,6 +664,32 @@ class AppLocalizationsRu extends AppLocalizations {
   String get splitTunnelEmpty => 'Пусто';
 
   @override
+  String get brutalTitle => 'Скорость Hysteria2 (Brutal)';
+
+  @override
+  String get brutalDesc =>
+      'Укажите реальную скорость соединения, чтобы Hysteria2 держал поток при потерях пакетов. Пусто = авто. Влияет только на серверы Hysteria2.';
+
+  @override
+  String get brutalDown => 'Загрузка, Мбит/с';
+
+  @override
+  String get brutalUp => 'Отдача, Мбит/с';
+
+  @override
+  String get brutalHint => 'авто';
+
+  @override
+  String get dnsTitle => 'Свой DNS (DoH)';
+
+  @override
+  String get dnsDesc =>
+      'DNS-over-HTTPS резолвер для всех запросов. Пусто = по умолчанию (Yandex 77.88.8.8, всегда доступен в РФ). Указывайте сервер, которому доверяете — заблокированный просто сломает разрешение имён.';
+
+  @override
+  String get dnsHint => 'напр. 1.1.1.1 или dns.google';
+
+  @override
   String get killSwitchTitle => 'Kill-switch для TUN (экспериментально)';
 
   @override

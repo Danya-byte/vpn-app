@@ -660,6 +660,32 @@ class AppLocalizationsEn extends AppLocalizations {
   String get splitTunnelEmpty => 'None';
 
   @override
+  String get brutalTitle => 'Hysteria2 speed (Brutal)';
+
+  @override
+  String get brutalDesc =>
+      'Enter your real connection speed so Hysteria2 holds throughput under packet loss. Leave blank for auto. Only affects Hysteria2 servers.';
+
+  @override
+  String get brutalDown => 'Download, Mbps';
+
+  @override
+  String get brutalUp => 'Upload, Mbps';
+
+  @override
+  String get brutalHint => 'auto';
+
+  @override
+  String get dnsTitle => 'Custom DNS (DoH)';
+
+  @override
+  String get dnsDesc =>
+      'DNS-over-HTTPS resolver for all lookups. Leave blank for the default (Yandex 77.88.8.8, always reachable in RU). Use a server you trust — a blocked one just breaks name resolution.';
+
+  @override
+  String get dnsHint => 'e.g. 1.1.1.1 or dns.google';
+
+  @override
   String get killSwitchTitle => 'TUN kill-switch (experimental)';
 
   @override

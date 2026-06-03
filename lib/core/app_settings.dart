@@ -52,6 +52,9 @@ class AppSettings {
     this.launchAtStartup = false, // launch at login via HKCU Run (no admin)
     this.closeToTray = true, // closing the window hides to tray (tunnel keeps running)
     this.seenSetup = false, // first-run protection-mode choice shown yet?
+    this.hy2UpMbps = 0, // Hysteria2 Brutal upload cap, Mbps (0 = let Hysteria2 auto-tune)
+    this.hy2DownMbps = 0, // Hysteria2 Brutal download cap, Mbps (0 = auto)
+    this.customDns = '', // custom DoH resolver; '' = the RF-safe default (Yandex)
     this.logLevel = defaultLogLevel,
     this.localeCode,
   });
@@ -73,6 +76,9 @@ class AppSettings {
   final bool launchAtStartup; // launch at login (HKCU Run)
   final bool closeToTray; // close → hide to tray instead of quitting
   final bool seenSetup; // has the first-run protection-mode choice been shown?
+  final int hy2UpMbps; // Hysteria2 Brutal upload cap, Mbps (0 = auto)
+  final int hy2DownMbps; // Hysteria2 Brutal download cap, Mbps (0 = auto)
+  final String customDns; // custom DoH resolver ('' = RF-safe default)
   final String logLevel; // sing-box log verbosity (warn/info/debug)
   final String? localeCode; // 'en' | 'ru' | null = follow system
 
@@ -96,6 +102,9 @@ class AppSettings {
     bool? launchAtStartup,
     bool? closeToTray,
     bool? seenSetup,
+    int? hy2UpMbps,
+    int? hy2DownMbps,
+    String? customDns,
     String? logLevel,
     String? localeCode,
     bool clearLocale = false,
@@ -118,6 +127,9 @@ class AppSettings {
         launchAtStartup: launchAtStartup ?? this.launchAtStartup,
         closeToTray: closeToTray ?? this.closeToTray,
         seenSetup: seenSetup ?? this.seenSetup,
+        hy2UpMbps: hy2UpMbps ?? this.hy2UpMbps,
+        hy2DownMbps: hy2DownMbps ?? this.hy2DownMbps,
+        customDns: customDns ?? this.customDns,
         logLevel: logLevel ?? this.logLevel,
         localeCode: clearLocale ? null : (localeCode ?? this.localeCode),
       );
@@ -172,6 +184,9 @@ class SettingsController extends Notifier<AppSettings> {
           launchAtStartup: j['launchAtStartup'] as bool? ?? false,
           closeToTray: j['closeToTray'] as bool? ?? true,
           seenSetup: j['seenSetup'] as bool? ?? false,
+          hy2UpMbps: (j['hy2UpMbps'] as num?)?.toInt() ?? 0,
+          hy2DownMbps: (j['hy2DownMbps'] as num?)?.toInt() ?? 0,
+          customDns: j['customDns'] as String? ?? '',
           logLevel: logLevels.contains(j['logLevel'])
               ? j['logLevel'] as String
               : defaultLogLevel,
@@ -206,6 +221,9 @@ class SettingsController extends Notifier<AppSettings> {
             'launchAtStartup': state.launchAtStartup,
             'closeToTray': state.closeToTray,
             'seenSetup': state.seenSetup,
+            'hy2UpMbps': state.hy2UpMbps,
+            'hy2DownMbps': state.hy2DownMbps,
+            'customDns': state.customDns,
             'logLevel': state.logLevel,
             'locale': state.localeCode,
           }));
@@ -229,6 +247,22 @@ class SettingsController extends Notifier<AppSettings> {
 
   void setKillSwitchTun(bool v) {
     state = state.copyWith(killSwitchTun: v);
+    _save();
+  }
+
+  /// Hysteria2 Brutal bandwidth caps (Mbps). Clamped to >= 0; 0 means "let
+  /// Hysteria2 auto-tune" (the field is then omitted from the outbound).
+  void setHy2Bandwidth({int? up, int? down}) {
+    state = state.copyWith(
+      hy2UpMbps: up == null ? null : (up < 0 ? 0 : up),
+      hy2DownMbps: down == null ? null : (down < 0 ? 0 : down),
+    );
+    _save();
+  }
+
+  /// Custom DoH resolver. Trimmed; '' restores the RF-safe default at connect.
+  void setCustomDns(String v) {
+    state = state.copyWith(customDns: v.trim());
     _save();
   }
 

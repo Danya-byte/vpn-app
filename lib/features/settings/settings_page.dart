@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart'; // StateProvider (moved in Riverpod 3)
 
@@ -483,6 +484,10 @@ class SettingsPage extends ConsumerWidget {
           ),
           const SizedBox(height: 12),
           const _SplitTunnelCard(),
+          const SizedBox(height: 12),
+          const _Hysteria2Card(),
+          const SizedBox(height: 12),
+          const _CustomDnsCard(),
         ],
         const SizedBox(height: 12),
         GlassCard(
@@ -663,6 +668,160 @@ class SettingsPage extends ConsumerWidget {
           ? Icon(Icons.check_rounded, color: scheme.primary, size: 20)
           : null,
       onTap: () => ref.read(settingsProvider.notifier).setLocale(code),
+    );
+  }
+}
+
+/// Custom DoH resolver. Blank = the RF-safe default (Yandex 77.88.8.8). Kept a
+/// DoH server so a custom value stays DPI-resistant.
+class _CustomDnsCard extends ConsumerStatefulWidget {
+  const _CustomDnsCard();
+
+  @override
+  ConsumerState<_CustomDnsCard> createState() => _CustomDnsCardState();
+}
+
+class _CustomDnsCardState extends ConsumerState<_CustomDnsCard> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: ref.read(settingsProvider).customDns);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return GlassCard(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            l.dnsTitle,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            l.dnsDesc,
+            style: TextStyle(
+              fontSize: 11,
+              color: scheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _ctrl,
+            decoration: glassInputDecoration(context, l.dnsHint),
+            onChanged: (v) =>
+                ref.read(settingsProvider.notifier).setCustomDns(v),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Hysteria2 Brutal bandwidth tuning: enter your real line speed (Mbps) so
+/// Hysteria2's congestion control holds throughput under loss/jitter on a noisy
+/// RF link. Blank/0 = auto-tune. Only affects hysteria2 nodes.
+class _Hysteria2Card extends ConsumerStatefulWidget {
+  const _Hysteria2Card();
+
+  @override
+  ConsumerState<_Hysteria2Card> createState() => _Hysteria2CardState();
+}
+
+class _Hysteria2CardState extends ConsumerState<_Hysteria2Card> {
+  late final TextEditingController _upCtrl;
+  late final TextEditingController _downCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = ref.read(settingsProvider);
+    _upCtrl =
+        TextEditingController(text: s.hy2UpMbps > 0 ? '${s.hy2UpMbps}' : '');
+    _downCtrl =
+        TextEditingController(text: s.hy2DownMbps > 0 ? '${s.hy2DownMbps}' : '');
+  }
+
+  @override
+  void dispose() {
+    _upCtrl.dispose();
+    _downCtrl.dispose();
+    super.dispose();
+  }
+
+  void _commit() => ref.read(settingsProvider.notifier).setHy2Bandwidth(
+        up: int.tryParse(_upCtrl.text.trim()) ?? 0,
+        down: int.tryParse(_downCtrl.text.trim()) ?? 0,
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return GlassCard(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            l.brutalTitle,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            l.brutalDesc,
+            style: TextStyle(
+              fontSize: 11,
+              color: scheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _field(_downCtrl, l.brutalDown, l)),
+              const SizedBox(width: 10),
+              Expanded(child: _field(_upCtrl, l.brutalUp, l)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _field(TextEditingController c, String label, AppLocalizations l) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: scheme.onSurface.withValues(alpha: 0.7),
+          ),
+        ),
+        const SizedBox(height: 6),
+        TextField(
+          controller: c,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: glassInputDecoration(context, l.brutalHint),
+          onChanged: (_) => _commit(),
+        ),
+      ],
     );
   }
 }

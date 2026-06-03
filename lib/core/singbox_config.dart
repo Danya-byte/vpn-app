@@ -86,7 +86,7 @@ class SingBoxConfig {
         'experimental': {'clash_api': _clashApi()},
         'dns': {
           'servers': [
-            {'type': 'https', 'tag': 'dns-direct', 'server': '77.88.8.8'},
+            {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
           ],
           'final': 'dns-direct',
           'strategy': 'ipv4_only',
@@ -132,6 +132,14 @@ class SingBoxConfig {
   /// what the in-app log shows — 'warn' = quiet (warnings/errors), 'info' = every
   /// connection, 'debug' = everything.
   static String logLevel = 'warn';
+
+  /// DoH resolver every generated config hijacks DNS to. Default is Yandex
+  /// (`77.88.8.8`) — an always-reachable RU DoH endpoint, the safe RF default.
+  /// The app overrides it from the user's "custom DNS" setting at connect time;
+  /// an empty setting keeps this default. Kept as a DoH server (type:https) so a
+  /// custom value is still DPI-resistant — picking a plain blocked resolver would
+  /// just break resolution, hence the default stays a known-good one.
+  static String dnsServer = '77.88.8.8';
 
   static Map<String, dynamic> _ruleSet(String tag, String remoteUrl) {
     if (ruleSetDir.isNotEmpty) {
@@ -358,7 +366,7 @@ class SingBoxConfig {
             {'type': 'https', 'tag': 'dns-proxy', 'server': '1.1.1.1', 'detour': tag},
             // No `detour: direct` — a DNS server dials direct by default, and
             // 1.13 FATALs on "detour to an empty direct outbound".
-            {'type': 'https', 'tag': 'dns-direct', 'server': '77.88.8.8'},
+            {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
           ],
           'final': 'dns-proxy',
           'strategy': 'ipv4_only', // RF has no working IPv6
@@ -394,7 +402,7 @@ class SingBoxConfig {
       'dns': {
         'servers': [
           {'type': 'https', 'tag': 'dns-proxy', 'server': '1.1.1.1', 'detour': tag},
-          {'type': 'https', 'tag': 'dns-direct', 'server': '77.88.8.8'},
+          {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
         ],
         if (useRuleSets)
           'rules': [
@@ -653,7 +661,7 @@ class SingBoxConfig {
       // Config had no DNS block — synthesize a safe IPv4-only one + resolver.
       cfg['dns'] = {
         'servers': [
-          {'type': 'https', 'tag': 'dns-direct', 'server': '77.88.8.8'},
+          {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
         ],
         'final': 'dns-direct',
         'strategy': 'ipv4_only',
@@ -1017,7 +1025,7 @@ class SingBoxConfig {
     if (cfg['dns'] == null) {
       cfg['dns'] = {
         'servers': [
-          {'type': 'https', 'tag': 'dns-direct', 'server': '77.88.8.8'},
+          {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
         ],
         'final': 'dns-direct',
         'strategy': 'ipv4_only',
@@ -1025,6 +1033,25 @@ class SingBoxConfig {
       route['default_domain_resolver'] = {'server': 'dns-direct'};
     }
     cfg['route'] = route;
+    return cfg;
+  }
+
+  /// Stamp Brutal-style fixed bandwidth onto every hysteria2 outbound when the
+  /// user has set their line speed. Hysteria2's congestion control holds
+  /// throughput under loss/jitter (noisy RF links) when told the real up/down
+  /// rate; 0 leaves it to Hysteria2's default auto-tune (field omitted). Safe
+  /// no-op for every other protocol and when both are 0.
+  static Map<String, dynamic> tuneHysteria2(
+      Map<String, dynamic> cfg, int upMbps, int downMbps) {
+    if (upMbps <= 0 && downMbps <= 0) return cfg;
+    final outs = cfg['outbounds'];
+    if (outs is! List) return cfg;
+    for (final o in outs) {
+      if (o is Map && o['type'] == 'hysteria2') {
+        if (upMbps > 0) o['up_mbps'] = upMbps;
+        if (downMbps > 0) o['down_mbps'] = downMbps;
+      }
+    }
     return cfg;
   }
 

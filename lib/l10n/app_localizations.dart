@@ -1262,6 +1262,54 @@ abstract class AppLocalizations {
   /// **'None'**
   String get splitTunnelEmpty;
 
+  /// No description provided for @brutalTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Hysteria2 speed (Brutal)'**
+  String get brutalTitle;
+
+  /// No description provided for @brutalDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter your real connection speed so Hysteria2 holds throughput under packet loss. Leave blank for auto. Only affects Hysteria2 servers.'**
+  String get brutalDesc;
+
+  /// No description provided for @brutalDown.
+  ///
+  /// In en, this message translates to:
+  /// **'Download, Mbps'**
+  String get brutalDown;
+
+  /// No description provided for @brutalUp.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload, Mbps'**
+  String get brutalUp;
+
+  /// No description provided for @brutalHint.
+  ///
+  /// In en, this message translates to:
+  /// **'auto'**
+  String get brutalHint;
+
+  /// No description provided for @dnsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom DNS (DoH)'**
+  String get dnsTitle;
+
+  /// No description provided for @dnsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'DNS-over-HTTPS resolver for all lookups. Leave blank for the default (Yandex 77.88.8.8, always reachable in RU). Use a server you trust — a blocked one just breaks name resolution.'**
+  String get dnsDesc;
+
+  /// No description provided for @dnsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'e.g. 1.1.1.1 or dns.google'**
+  String get dnsHint;
+
   /// No description provided for @killSwitchTitle.
   ///
   /// In en, this message translates to:
