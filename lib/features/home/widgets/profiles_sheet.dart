@@ -1,0 +1,512 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../core/core_controller.dart';
+import '../../../core/format.dart';
+import '../../../core/profiles_controller.dart';
+import '../../../core/proxy_node.dart';
+import '../../../l10n/app_localizations.dart';
+import '../../../widgets/app_toast.dart';
+import '../../../widgets/glass.dart';
+import 'config_viewer.dart';
+import 'import_actions.dart';
+import 'server_node_dialog.dart';
+
+const _filesChannel = MethodChannel('app/files');
+
+Future<void> showProfilesSheet(BuildContext context) {
+  return showGlassSheet(context, child: const _ProfilesSheet());
+}
+
+class _ProfilesSheet extends ConsumerWidget {
+  const _ProfilesSheet();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final state = ref.watch(profilesProvider);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 10,
+        bottom: 18 + MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _grabber(),
+          Row(
+            children: [
+              Text('${l.profiles} (${state.nodes.length})',
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w700)),
+              const Spacer(),
+              if (state.nodes.any((n) => n.source != null))
+                IconButton(
+                  tooltip: l.refreshSubs,
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.refresh_rounded, color: scheme.primary),
+                  onPressed: () => _refreshSubs(context, ref),
+                ),
+              IconButton(
+                tooltip: l.addProfile,
+                visualDensity: VisualDensity.compact,
+                icon: Icon(Icons.more_vert_rounded, color: scheme.primary),
+                onPressed: () => showGlassDialog<void>(
+                  context,
+                  child: _AddMenu(parentContext: context, ref: ref),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (state.nodes.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 28),
+              child: Text(l.profilesEmpty,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: scheme.onSurface.withValues(alpha: 0.5))),
+            )
+          else
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: state.nodes.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (_, i) {
+                  final n = state.nodes[i];
+                  final selected = n.tag == state.selectedNode?.tag;
+                  return _NodeTile(
+                    node: n,
+                    selected: selected,
+                    // select() already restarts the live tunnel to the new node;
+                    // a second restart here caused a DOUBLE restart per tap.
+                    onTap: () => _selectGuarded(context, ref, n),
+                    onDelete: () => _confirmDelete(context, ref, n),
+                    onView:
+                        n.isConfig ? () => showConfigViewer(context, n) : null,
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+Widget _grabber() => Center(
+      child: Container(
+        width: 38,
+        height: 4,
+        margin: const EdgeInsets.only(bottom: 14),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.25),
+          borderRadius: BorderRadius.circular(2),
+        ),
+      ),
+    );
+
+/// The "add profile" methods, shown in a centered glass dialog.
+class _AddMenu extends StatelessWidget {
+  const _AddMenu({required this.parentContext, required this.ref});
+
+  final BuildContext parentContext;
+  final WidgetRef ref;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    Widget item(IconData icon, String label,
+        void Function(BuildContext, WidgetRef) run) {
+      return InkWell(
+        onTap: () {
+          Navigator.pop(context);
+          run(parentContext, ref);
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: scheme.primary),
+              const SizedBox(width: 14),
+              Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 6),
+        item(Icons.dns_rounded, l.createOwnNode, showServerGenSheet),
+        const Divider(height: 6, indent: 18, endIndent: 18),
+        item(Icons.content_paste_rounded, l.btnLinkList, _importTextDialog),
+        item(Icons.link_rounded, l.btnSubscriptionUrl, _importUrlDialog),
+        item(Icons.paste_rounded, l.btnFromClipboard, _importClipboard),
+        item(Icons.folder_open_rounded, l.btnFromFile, _importFile),
+        const Divider(height: 6, indent: 18, endIndent: 18),
+        item(Icons.save_alt_rounded, l.btnExport, _exportProfiles),
+        const SizedBox(height: 6),
+      ],
+    );
+  }
+}
+
+Future<void> _importTextDialog(BuildContext context, WidgetRef ref) async {
+  final l = AppLocalizations.of(context);
+  final ctrl = TextEditingController();
+  final ok = await showGlassDialog<bool>(
+    context,
+    child: _GlassFormDialog(
+      title: l.dlgImportTitle,
+      confirmLabel: l.importAction,
+      field: TextField(
+        controller: ctrl,
+        maxLines: 6,
+        minLines: 3,
+        autofocus: true,
+        decoration: glassInputDecoration(context, l.dlgImportHint),
+      ),
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  final r = ref.read(profilesProvider.notifier).importText(ctrl.text);
+  await applyImport(context, ref, r);
+}
+
+Future<void> _importUrlDialog(BuildContext context, WidgetRef ref) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final ctrl = TextEditingController();
+  final ok = await showGlassDialog<bool>(
+    context,
+    child: _GlassFormDialog(
+      title: l.dlgUrlTitle,
+      confirmLabel: l.loadAction,
+      field: TextField(
+        controller: ctrl,
+        autofocus: true,
+        keyboardType: TextInputType.url,
+        decoration: glassInputDecoration(context, l.dlgUrlHint),
+      ),
+    ),
+  );
+  if (ok != true) return;
+  final url = ctrl.text.trim();
+  if (url.isEmpty) {
+    toast.message(l.msgSubscriptionEmpty, kind: ToastKind.error);
+    return;
+  }
+  try {
+    final r =
+        await ref.read(profilesProvider.notifier).importSubscriptionUrl(url);
+    if (!context.mounted) return;
+    await applyImport(context, ref, r);
+  } catch (e) {
+    toast.message(l.msgLoadError(friendlyError(e)), kind: ToastKind.error);
+  }
+}
+
+Future<void> _importClipboard(BuildContext context, WidgetRef ref) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final data = await Clipboard.getData(Clipboard.kTextPlain);
+  if (!context.mounted) return;
+  final text = data?.text ?? '';
+  if (text.trim().isEmpty) {
+    toast.message(l.msgClipboardEmpty, kind: ToastKind.error);
+    return;
+  }
+  final r = ref.read(profilesProvider.notifier).importText(text);
+  await applyImport(context, ref, r);
+}
+
+/// Export the whole profile store to a JSON file (a backup, re-importable via
+/// the normal import path which recognises the store shape).
+Future<void> _exportProfiles(BuildContext context, WidgetRef ref) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final json = ref.read(profilesProvider.notifier).exportJson();
+  final path = await _filesChannel
+      .invokeMethod<String>('saveFile', {'name': 'vpn-app-profiles.json'});
+  if (path == null || path.isEmpty || !context.mounted) return;
+  try {
+    await File(path).writeAsString(json);
+    toast.message(l.exportDone, kind: ToastKind.success);
+  } catch (e) {
+    toast.message(l.msgLoadError(friendlyError(e)), kind: ToastKind.error);
+  }
+}
+
+Future<void> _importFile(BuildContext context, WidgetRef ref) async {
+  final path = await _filesChannel.invokeMethod<String>('openFile');
+  if (path == null || path.isEmpty || !context.mounted) return;
+  await importFromFile(context, ref, path);
+}
+
+/// Confirm before deleting — the trash icon sits next to the view/select
+/// targets, so a mis-tap shouldn't silently drop a profile.
+// A tap while the tunnel is UP immediately select()→restart()s onto the node. If
+// it's insecure (cert-validation-off), ask first — the SAME MITM consent the
+// Connect button enforces, so a mid-session switch can't bypass H5. A
+// disconnected tap just sets the selection; the Connect button gates that one.
+Future<void> _selectGuarded(
+    BuildContext context, WidgetRef ref, ParsedNode n) async {
+  if (n.insecure && ref.read(coreControllerProvider).isOn) {
+    final l = AppLocalizations.of(context);
+    final ok = await showGlassDialog<bool>(
+      context,
+      child: _ConfirmDialog(
+          message: l.insecureConnectBody, confirmLabel: l.insecureConnectAction),
+    );
+    if (ok != true) return;
+  }
+  ref.read(profilesProvider.notifier).select(n.tag);
+}
+
+Future<void> _confirmDelete(
+    BuildContext context, WidgetRef ref, ParsedNode n) async {
+  final l = AppLocalizations.of(context);
+  final ok = await showGlassDialog<bool>(
+    context,
+    child: _ConfirmDialog(
+        message: l.deleteProfileConfirm(n.tag), confirmLabel: l.delete),
+  );
+  if (ok == true) ref.read(profilesProvider.notifier).remove(n.tag);
+}
+
+Future<void> _refreshSubs(BuildContext context, WidgetRef ref) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final r = await ref.read(profilesProvider.notifier).refreshSubscriptions();
+  if (!context.mounted) return;
+  toast.message(r.added > 0 ? l.msgAddedNodes(r.added) : l.subsUpToDate);
+}
+
+class _GlassFormDialog extends StatelessWidget {
+  const _GlassFormDialog({
+    required this.title,
+    required this.field,
+    required this.confirmLabel,
+  });
+
+  final String title;
+  final Widget field;
+  final String confirmLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title,
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 14),
+          field,
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: Text(l.cancel)),
+              const SizedBox(width: 8),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: Text(confirmLabel)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConfirmDialog extends StatelessWidget {
+  const _ConfirmDialog({required this.message, required this.confirmLabel});
+
+  final String message;
+  final String confirmLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(message,
+              style:
+                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 18),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: Text(l.cancel)),
+              const SizedBox(width: 8),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  style: FilledButton.styleFrom(backgroundColor: scheme.error),
+                  child: Text(confirmLabel)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Amber chip warning that a node disables TLS cert validation (MITM-able).
+class _InsecureBadge extends StatelessWidget {
+  const _InsecureBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    const amber = Color(0xFFE0A53D);
+    return Tooltip(
+      message: label,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: amber.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: amber.withValues(alpha: 0.45)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.gpp_maybe_rounded, size: 11, color: amber),
+            const SizedBox(width: 3),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 9.5, fontWeight: FontWeight.w700, color: amber)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NodeTile extends StatelessWidget {
+  const _NodeTile({
+    required this.node,
+    required this.selected,
+    required this.onTap,
+    required this.onDelete,
+    this.onView,
+  });
+
+  final ParsedNode node;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  final VoidCallback? onView;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: Material(
+        color: selected
+            ? scheme.primary.withValues(alpha: 0.16)
+            : Colors.white.withValues(alpha: 0.05),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: selected
+                    ? scheme.primary.withValues(alpha: 0.5)
+                    : Colors.white.withValues(alpha: 0.10),
+              ),
+            ),
+            padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+            child: Row(
+              children: [
+                Icon(
+                  selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                  size: 20,
+                  color: selected
+                      ? scheme.primary
+                      : scheme.onSurface.withValues(alpha: 0.4),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(node.tag,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w600)),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(node.type,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: scheme.onSurface
+                                        .withValues(alpha: 0.5))),
+                          ),
+                          if (node.insecure) ...[
+                            const SizedBox(width: 6),
+                            _InsecureBadge(label: l.insecureBadge),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                if (onView != null)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(Icons.code_rounded,
+                        size: 18,
+                        color: scheme.onSurface.withValues(alpha: 0.55)),
+                    onPressed: onView,
+                  ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.delete_outline_rounded,
+                      size: 18,
+                      color: scheme.onSurface.withValues(alpha: 0.45)),
+                  onPressed: onDelete,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+

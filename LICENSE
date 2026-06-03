@@ -1,0 +1,25 @@
+VPN App — a censorship-resistant VPN client for Windows.
+Copyright (C) 2026 Danya-byte (https://github.com/Danya-byte/vpn-app)
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version (GPL-3.0-or-later).
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+The application bundles and dynamically invokes third-party proxy cores; the
+combined distribution is therefore licensed under GPL-3.0-or-later. See
+THIRD_PARTY_NOTICES.md for the licenses of the bundled components (sing-box,
+xray-core, wintun, and the SagerNet rule-sets).
+
+The complete text of the GNU General Public License version 3 is the canonical
+FSF document, available at <https://www.gnu.org/licenses/gpl-3.0.txt>. A verbatim
+copy MUST accompany every binary distribution of this program (ship it as the
+file `COPYING` alongside the executable; `tool/package.ps1` includes it in the
+release archive).
+
+  This program is distributed under GPL-3.0-or-later.
+  SPDX-License-Identifier: GPL-3.0-or-later
