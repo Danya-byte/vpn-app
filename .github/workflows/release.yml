@@ -2,10 +2,12 @@
 # GitHub Release.
 #
 # TRIGGER: a push to `main` whose HEAD commit MESSAGE carries a version marker
-# like [v1.2] or [v1.2.3]. No git tag needed — the `detect` job reads the marker,
-# the build runs ONLY when one is present, and CI creates the tag + Release for
-# that version. (Also runnable manually: workflow_dispatch with a version input =
-# real release; without one = just build + upload test artifacts, no publish.)
+# like [v1.2], [v1.2.3], or with a channel suffix [v1.2 beta] / [v1.0.2-rc1]
+# (a space in the suffix becomes '-' in the tag: [v1.2 beta] -> v1.2-beta). No git
+# tag needed — the `detect` job reads the marker, the build runs ONLY when one is
+# present, and CI creates the tag + Release for that version. (Also runnable
+# manually: workflow_dispatch with a version input = real release; without one =
+# just build + upload test artifacts, no publish.)
 #
 # Ships UNSIGNED, on purpose: OSS with public releases, so the published .sha256
 # is the integrity check. Reproducibility: pinned FLUTTER_VERSION + SHA-256-
@@ -46,18 +48,25 @@ jobs:
           MSG: ${{ github.event.head_commit.message }}
           MANUAL: ${{ github.event.inputs.version }}
         run: |
+          # Accept [vX.Y] / [vX.Y.Z] with an OPTIONAL channel suffix, e.g.
+          # [v1.2 beta], [v1.0.2-rc1]. The suffix may be separated by space / . / _ / -.
+          ver=""
           if [ -n "$MANUAL" ]; then
-            echo "release=true"     >> "$GITHUB_OUTPUT"
-            echo "version=$MANUAL"  >> "$GITHUB_OUTPUT"
-            echo "manual release: v$MANUAL"
-          elif [[ "$MSG" =~ \[v([0-9]+\.[0-9]+(\.[0-9]+)?)\] ]]; then
-            echo "release=true"                       >> "$GITHUB_OUTPUT"
-            echo "version=${BASH_REMATCH[1]}"         >> "$GITHUB_OUTPUT"
-            echo "release marker found: v${BASH_REMATCH[1]}"
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "no [vX.Y] marker in the commit message -> skipping release."
+            ver="$MANUAL"
+          elif [[ "$MSG" =~ \[v([0-9]+\.[0-9]+(\.[0-9]+)?([[:space:]._-]+[A-Za-z0-9.]+)?)\] ]]; then
+            ver="${BASH_REMATCH[1]}"
           fi
+          if [ -z "$ver" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "no [vX.Y] / [vX.Y.Z] (optionally with ' beta' / '-rc1') marker -> skipping release."
+            exit 0
+          fi
+          # A git tag can't contain spaces: whitespace -> '-', then trim/collapse.
+          ver="$(echo "$ver" | tr -s '[:space:]' '-')"
+          ver="${ver#-}"; ver="${ver%-}"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "release: v$ver"
 
   windows:
     needs: detect

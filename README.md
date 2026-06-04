@@ -122,12 +122,13 @@ System-proxy mode needs no admin; TUN mode prompts for elevation on demand.
 ### Cut a release
 
 CI publishes a GitHub Release when a push to `main` carries a **version marker in the commit
-message** — `[v1.2]` or `[v1.2.3]`. No git tag needed:
+message** — `[v1.2]`, `[v1.2.3]`, or with a channel suffix `[v1.2 beta]` / `[v1.0.2-rc1]`
+(a space becomes `-`: `[v1.2 beta]` → tag `v1.2-beta`). No git tag needed:
 
 ```sh
-git commit -m "installer + RF hardening [v1.2]"
+git commit -m "installer + RF hardening [v1.2 beta]"
 git push origin main          # → CI: analyze + test → build zip + installer + .sha256
-                              #   → creates tag v1.2 + the GitHub Release
+                              #   → creates tag v1.2-beta + the GitHub Release
 ```
 A normal push (no `[v…]` marker) builds nothing. The marker's version is stamped into the build,
 installer name, and About so they match the tag. (`.github/workflows/release.yml` also has a manual
