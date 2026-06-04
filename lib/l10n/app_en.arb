@@ -71,7 +71,6 @@
   "version": "Version",
   "developer": "Developer",
   "sourceCode": "Source code (GitHub)",
-  "openSourceNote": "Open source • no telemetry",
   "factsFeed": "Censorship facts",
   "factsFeedBuiltIn": "Built-in (updates on connect)",
   "vpnModeTitle": "VPN mode",

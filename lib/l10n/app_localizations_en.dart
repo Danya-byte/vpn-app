@@ -194,9 +194,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sourceCode => 'Source code (GitHub)';
 
   @override
-  String get openSourceNote => 'Open source • no telemetry';
-
-  @override
   String get factsFeed => 'Censorship facts';
 
   @override

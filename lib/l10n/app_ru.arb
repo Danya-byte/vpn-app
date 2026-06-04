@@ -62,7 +62,6 @@
   "version": "Версия",
   "developer": "Разработчик",
   "sourceCode": "Исходный код (GitHub)",
-  "openSourceNote": "Открытый код • без телеметрии",
   "factsFeed": "Данные о цензуре",
   "factsFeedBuiltIn": "Встроенные (обновляются при подключении)",
   "vpnModeTitle": "Режим VPN",

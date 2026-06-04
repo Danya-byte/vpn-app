@@ -195,9 +195,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get sourceCode => 'Исходный код (GitHub)';
 
   @override
-  String get openSourceNote => 'Открытый код • без телеметрии';
-
-  @override
   String get factsFeed => 'Данные о цензуре';
 
   @override

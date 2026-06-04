@@ -21,8 +21,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
 # --- version + commit stamp ---------------------------------------------------
+# Prefer an explicit RELEASE_VERSION (CI sets it from the commit-message marker
+# [vX.Y], so the build/installer/About match the published tag); else pubspec.
 $pubspec = Get-Content (Join-Path $root 'pubspec.yaml') -Raw
-$ver = if ($pubspec -match '(?m)^version:\s*([0-9]+\.[0-9]+\.[0-9]+)') { $Matches[1] } else { '0.0.0' }
+$ver = if ($env:RELEASE_VERSION) { $env:RELEASE_VERSION.Trim() }
+       elseif ($pubspec -match '(?m)^version:\s*([0-9]+\.[0-9]+\.[0-9]+)') { $Matches[1] }
+       else { '0.0.0' }
 $sha = try { (& git -C $root rev-parse --short HEAD).Trim() } catch { 'nogit' }
 Write-Host "Building VPN App $ver ($sha) ..."
 
@@ -78,9 +82,19 @@ $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
 Set-Content -Path "$zip.sha256" -Value "$hash  vpn_app-windows-x64.zip" -Encoding ascii
 
 # --- optional installer (Inno Setup), built from the same populated Release ---
-$iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
-if ($iscc) {
-  & $iscc.Source "/DAppVer=$ver" (Join-Path $PSScriptRoot 'installer.iss')
+# Inno Setup often isn't on PATH (esp. the user-scope install under LOCALAPPDATA),
+# so fall back to the standard install locations before giving up.
+$isccPath = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+if (-not $isccPath) {
+  foreach ($p in @(
+      "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+      "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+      "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+    if (Test-Path $p) { $isccPath = $p; break }
+  }
+}
+if ($isccPath) {
+  & $isccPath "/DAppVer=$ver" (Join-Path $PSScriptRoot 'installer.iss')
   if ($LASTEXITCODE -ne 0) { throw 'iscc (installer build) failed' }
   $setup = Join-Path $dist "vpn_app-setup-$ver.exe"
   if (Test-Path $setup) {

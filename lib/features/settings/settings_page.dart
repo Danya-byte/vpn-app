@@ -467,14 +467,6 @@ class SettingsPage extends ConsumerWidget {
                     ? l.factsFeedBuiltIn
                     : 'v${facts.version} · ${facts.updated}',
               ),
-              const SizedBox(height: 4),
-              Text(
-                l.openSourceNote,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: scheme.onSurface.withValues(alpha: 0.55),
-                ),
-              ),
               if (update != null)
                 _linkTile(
                   context,

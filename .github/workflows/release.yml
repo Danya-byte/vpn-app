@@ -1,25 +1,29 @@
-# Release CI — builds the Windows app + installer, hashes it, and attaches the
-# artifacts to a GitHub Release on a version tag.
+# Release CI — builds the Windows app + installer, hashes it, and publishes a
+# GitHub Release.
 #
-# Ships UNSIGNED, on purpose: this is open-source with public releases, so the
-# published .sha256 is the integrity check (Authenticode only suppresses the
-# SmartScreen prompt — a UX nicety, not a security property, and not worth a paid
-# cert for an OSS tool). Users verify the SHA-256 against the release page.
+# TRIGGER: a push to `main` whose HEAD commit MESSAGE carries a version marker
+# like [v1.2] or [v1.2.3]. No git tag needed — the `detect` job reads the marker,
+# the build runs ONLY when one is present, and CI creates the tag + Release for
+# that version. (Also runnable manually: workflow_dispatch with a version input =
+# real release; without one = just build + upload test artifacts, no publish.)
 #
-# Reproducibility caveat (honest): Flutter Windows builds are NOT bit-for-bit
-# reproducible today. We get as close as practical by pinning the Flutter version
-# below and the SHA-256-verified cores (tool/fetch-cores.ps1). Pin FLUTTER_VERSION
-# to the exact version you build with locally.
+# Ships UNSIGNED, on purpose: OSS with public releases, so the published .sha256
+# is the integrity check. Reproducibility: pinned FLUTTER_VERSION + SHA-256-
+# verified cores (tool/fetch-cores.ps1).
 
 name: release
 
 on:
   push:
-    tags: ['v*'] # v1.2.3 → a real release
-  workflow_dispatch: {} # manual run → test artifacts (no release)
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 1.2.3 (leave empty = test build, no publish)'
+        required: false
 
 permissions:
-  contents: write # create the Release + upload assets
+  contents: write # create the tag + Release + upload assets
 
 env:
   # MUST ship Dart >= 3.12 — pubspec is `sdk: ^3.12.0`, so an older Flutter
@@ -27,12 +31,47 @@ env:
   FLUTTER_VERSION: '3.44.0'
 
 jobs:
+  # Decide whether this push is a release + what version, from the commit-message
+  # marker [vX.Y(.Z)]. Cheap (seconds) so the heavy Windows build runs ONLY on a
+  # marked commit — a normal push to main does nothing.
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.v.outputs.release }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          MANUAL: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$MANUAL" ]; then
+            echo "release=true"     >> "$GITHUB_OUTPUT"
+            echo "version=$MANUAL"  >> "$GITHUB_OUTPUT"
+            echo "manual release: v$MANUAL"
+          elif [[ "$MSG" =~ \[v([0-9]+\.[0-9]+(\.[0-9]+)?)\] ]]; then
+            echo "release=true"                       >> "$GITHUB_OUTPUT"
+            echo "version=${BASH_REMATCH[1]}"         >> "$GITHUB_OUTPUT"
+            echo "release marker found: v${BASH_REMATCH[1]}"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "no [vX.Y] marker in the commit message -> skipping release."
+          fi
+
   windows:
+    needs: detect
+    # Build on a marked commit (-> publish) OR any manual run (-> test artifacts).
+    if: needs.detect.outputs.release == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
+    env:
+      # package.ps1 stamps this version into the build / installer / About so they
+      # match the published tag (falls back to pubspec when empty, e.g. test runs).
+      RELEASE_VERSION: ${{ needs.detect.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # package.ps1 stamps the short commit (needs full history/tags)
+          fetch-depth: 0 # package.ps1 stamps the short commit (needs full history)
 
       - uses: subosito/flutter-action@v2
         with:
@@ -52,13 +91,13 @@ jobs:
         run: ./tool/fetch-cores.ps1 -IncludeXray
 
       # Gate the release on a clean analyze + the full suite (incl. the REAL
-      # `sing-box check` against the just-fetched core). A broken build must
-      # never reach a published release.
+      # `sing-box check` against the just-fetched core). A broken build must never
+      # reach a published release.
       - run: flutter analyze
       - run: flutter test
 
-      # package.ps1: build (version/commit-stamped) → bundle cores + license/notices
-      # → zip + .sha256 → installer.
+      # build (version/commit-stamped) -> bundle cores + license -> zip + .sha256
+      # -> installer.
       - name: Build + package
         shell: pwsh
         run: ./tool/package.ps1
@@ -72,12 +111,14 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-      # Attach to the GitHub Release on a tag push (skipped on manual runs). The
-      # .sha256 ships alongside so users can verify the download.
-      - name: Publish release assets
-        if: startsWith(github.ref, 'refs/tags/')
+      # Create the tag (vX.Y) + GitHub Release at this commit and attach the
+      # artifacts. ONLY when a version was resolved (marker / manual input).
+      - name: Publish release
+        if: needs.detect.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.detect.outputs.version }}
+          name: v${{ needs.detect.outputs.version }}
           files: |
             dist/*.zip
             dist/*.exe

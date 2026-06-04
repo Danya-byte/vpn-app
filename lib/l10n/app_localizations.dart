@@ -452,12 +452,6 @@ abstract class AppLocalizations {
   /// **'Source code (GitHub)'**
   String get sourceCode;
 
-  /// No description provided for @openSourceNote.
-  ///
-  /// In en, this message translates to:
-  /// **'Open source • no telemetry'**
-  String get openSourceNote;
-
   /// No description provided for @factsFeed.
   ///
   /// In en, this message translates to:
