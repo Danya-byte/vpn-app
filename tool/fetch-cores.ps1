@@ -97,7 +97,7 @@ $rsDir = Join-Path (Split-Path $Dest -Parent) 'rule-sets'
 New-Item -ItemType Directory -Force $rsDir | Out-Null
 $ruleSets = @(
   @{ Name = 'geoip-ru.srs';    Url = 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs';                 Sha = '133d045108290b7e1ea929e3021807ad1842876d959bfc5ae347fdc7db4b5865' },
-  @{ Name = 'geosite-ru.srs';  Url = 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs';     Sha = '1996ce05d6b5a4d4a073be48e6f8ebec4efdddde49be32ac3f79018a80309367' },
+  @{ Name = 'geosite-ru.srs';  Url = 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs';     Sha = '181c98f830178f5e5ecd77b19c0c89dbc262b9800d8168bfe476a3a8bdf21bb5' },
   @{ Name = 'geosite-ads.srs'; Url = 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs'; Sha = 'c35ecb467bc8029b68bf3b6a680a7ba66b0daf4fe9203f2104b6837fe1b8120e' }
 )
 foreach ($rs in $ruleSets) {
