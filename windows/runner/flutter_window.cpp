@@ -207,7 +207,8 @@ std::wstring Utf16FromUtf8(const std::string& s) {
 // True if a proxy value points at our own loopback inbound — we must never back
 // THAT up as "the user's proxy", or a later restore strands them on a dead port.
 bool IsOwnLoopback(const std::wstring& proxy) {
-  return proxy.rfind(L"127.0.0.1", 0) == 0 || proxy.rfind(L"localhost", 0) == 0;
+  return proxy.rfind(L"127.0.0.1", 0) == 0 || proxy.rfind(L"localhost", 0) == 0 ||
+         proxy.rfind(L"[::1]", 0) == 0 || proxy.rfind(L"::1", 0) == 0;
 }
 
 void NotifyProxyChanged() {
@@ -325,7 +326,7 @@ void SetAutostart(bool on, bool minimized) {
 
 bool IsAutostartEnabled() { return !ReadString(kRunKey, L"vpn_app").empty(); }
 
-void SetSystemProxy(const std::wstring& server) {
+bool SetSystemProxy(const std::wstring& server) {
   // Snapshot the user's proxy once — but never back up ANY loopback value (a
   // dead 127.0.0.1:<port> left by a crash, even on a different port than the one
   // we're setting now), or a later restore would point them at nothing.
@@ -335,18 +336,26 @@ void SetSystemProxy(const std::wstring& server) {
     WriteDword(kBackupKey, L"BackupEnable",
                ReadDword(kInetKey, L"ProxyEnable", 0));
     WriteString(kBackupKey, L"BackupServer", current);
+    WriteString(kBackupKey, L"BackupOverride",
+                ReadString(kInetKey, L"ProxyOverride"));
     WriteDword(kBackupKey, L"BackupValid", 1);
   }
   WriteDword(kInetKey, L"ProxyEnable", 1);
   WriteString(kInetKey, L"ProxyServer", server);
   WriteString(kInetKey, L"ProxyOverride", L"<local>");
   NotifyProxyChanged();
+  // Verify the write actually landed — a denied/failed registry write must NOT
+  // look like success, or proxy mode fails OPEN silently (apps go direct).
+  return ReadString(kInetKey, L"ProxyServer") == server &&
+         ReadDword(kInetKey, L"ProxyEnable", 0) == 1;
 }
 
 void RestoreSystemProxy() {
   if (ReadDword(kBackupKey, L"BackupValid", 0) == 0) return;
   WriteDword(kInetKey, L"ProxyEnable", ReadDword(kBackupKey, L"BackupEnable", 0));
   WriteString(kInetKey, L"ProxyServer", ReadString(kBackupKey, L"BackupServer"));
+  WriteString(kInetKey, L"ProxyOverride",
+              ReadString(kBackupKey, L"BackupOverride"));
   WriteDword(kBackupKey, L"BackupValid", 0);
   NotifyProxyChanged();
 }
@@ -622,8 +631,8 @@ bool FlutterWindow::OnCreate() {
               server = std::get<std::string>(it->second);
             }
           }
-          SetSystemProxy(Utf16FromUtf8(server));
-          result->Success();
+          const bool ok = SetSystemProxy(Utf16FromUtf8(server));
+          result->Success(flutter::EncodableValue(ok));
         } else if (call.method_name() == "clearProxy") {
           RestoreSystemProxy();
           result->Success();

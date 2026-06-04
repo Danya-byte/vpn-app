@@ -6,11 +6,18 @@ import 'package:flutter/services.dart';
 class SystemProxy {
   static const _ch = MethodChannel('app/system');
 
-  static Future<void> set(String server) async {
+  /// Returns true if the proxy was actually applied. False = the native call ran
+  /// but FAILED (e.g. a denied registry write) → the caller must fail-closed, not
+  /// silently leave traffic going direct. A missing handler (tests / non-Windows)
+  /// is NOT a failure.
+  static Future<bool> set(String server) async {
     try {
-      await _ch.invokeMethod('setProxy', {'server': server});
+      final ok = await _ch.invokeMethod<bool>('setProxy', {'server': server});
+      return ok ?? true; // handler ran but didn't report → assume applied
+    } on MissingPluginException {
+      return true; // no native handler (tests / non-Windows) → not a failure
     } catch (_) {
-      // no native handler (tests / non-Windows) — ignore
+      return false; // the native call FAILED → caller fails-closed
     }
   }
 

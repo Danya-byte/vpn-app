@@ -58,11 +58,21 @@ bool TunLuid(NET_LUID* out) {
 
 bool AddFilter(const wchar_t* name, const GUID& layer,
                FWP_ACTION_TYPE action, UINT8 weight,
-               FWPM_FILTER_CONDITION0* conds, UINT32 num_conds) {
+               FWPM_FILTER_CONDITION0* conds, UINT32 num_conds,
+               bool hard = false) {
   FWPM_FILTER0 f = {};
   f.displayData.name = const_cast<wchar_t*>(name);
   f.layerKey = layer;
   f.subLayerKey = g_sublayer;
+  // CLEAR_ACTION_RIGHT makes a verdict AUTHORITATIVE — a competing VPN/AV sublayer
+  // can't override it. We set it ONLY on the two security-critical filters: the
+  // block-all (so nothing leaks past the fence) and the core app-id permit (so
+  // nothing can block the core's dial). NOT on the loopback/tunnel/DHCP/ND
+  // conveniences — leaving those soft avoids needlessly overriding a legitimate
+  // system policy (the lockout-rigidity WireGuard-Windows also avoids by being
+  // selective). Worst case a soft convenience permit loses to a hostile sublayer
+  // = a failed reconnect, not a plaintext leak.
+  if (hard) f.flags = FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT;
   f.action.type = action;
   f.weight.type = FWP_UINT8;
   f.weight.uint8 = weight;
@@ -74,7 +84,7 @@ bool AddFilter(const wchar_t* name, const GUID& layer,
 // Add the permit (loopback + core processes + tunnel interface) and block
 // filters to one layer (V4 or V6).
 bool AddLayer(const GUID& layer, const std::vector<FWP_BYTE_BLOB*>& app_ids,
-              UINT64* tun_luid) {
+              UINT64* tun_luid, bool is_v6) {
   bool ok = true;
 
   FWPM_FILTER_CONDITION0 loopback = {};
@@ -95,7 +105,7 @@ bool AddLayer(const GUID& layer, const std::vector<FWP_BYTE_BLOB*>& app_ids,
     core.conditionValue.type = FWP_BYTE_BLOB_TYPE;
     core.conditionValue.byteBlob = app_id;
     ok &= AddFilter(L"vpn_app permit core", layer, FWP_ACTION_PERMIT, 13, &core,
-                    1);
+                    1, /*hard=*/true);
   }
 
   if (tun_luid) {
@@ -108,8 +118,59 @@ bool AddLayer(const GUID& layer, const std::vector<FWP_BYTE_BLOB*>& app_ids,
                     &iface, 1);
   }
 
-  // The fence: block all other outbound. Lower weight than the permits.
-  ok &= AddFilter(L"vpn_app block all", layer, FWP_ACTION_BLOCK, 0, nullptr, 0);
+  // Permit the OS infrastructure traffic that must keep flowing while the fence
+  // is up, or the machine self-inflicts a network lockout during the very moment
+  // it's fighting censorship: DHCPv4 lease renewal (v4) and IPv6 Neighbor
+  // Discovery (v6). WireGuard-Windows permits these for the same reason. Weight
+  // 12 → above the block (0), below our app/loopback/tunnel permits (13).
+  if (!is_v6) {
+    FWPM_FILTER_CONDITION0 dhcp[2] = {};
+    dhcp[0].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
+    dhcp[0].matchType = FWP_MATCH_EQUAL;
+    dhcp[0].conditionValue.type = FWP_UINT8;
+    dhcp[0].conditionValue.uint8 = 17;  // IPPROTO_UDP
+    dhcp[1].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+    dhcp[1].matchType = FWP_MATCH_EQUAL;
+    dhcp[1].conditionValue.type = FWP_UINT16;
+    dhcp[1].conditionValue.uint16 = 67;  // DHCP server port
+    ok &=
+        AddFilter(L"vpn_app permit dhcp", layer, FWP_ACTION_PERMIT, 12, dhcp, 2);
+  } else {
+    // IPv6 Neighbor Discovery ONLY (ICMPv6 types 133-136: Router Solicit/Advert +
+    // Neighbor Solicit/Advert) so v6 doesn't self-lockout. NOT blanket proto-58 —
+    // that would also permit ICMPv6 Echo (ping -6) to leak out the physical NIC
+    // when the tunnel is down (an active-probe signal to the DPI).
+    for (UINT16 t = 133; t <= 136; ++t) {
+      FWPM_FILTER_CONDITION0 nd[2] = {};
+      nd[0].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
+      nd[0].matchType = FWP_MATCH_EQUAL;
+      nd[0].conditionValue.type = FWP_UINT8;
+      nd[0].conditionValue.uint8 = 58;  // IPPROTO_ICMPV6
+      nd[1].fieldKey = FWPM_CONDITION_ICMP_TYPE;
+      nd[1].matchType = FWP_MATCH_EQUAL;
+      nd[1].conditionValue.type = FWP_UINT16;
+      nd[1].conditionValue.uint16 = t;
+      ok &= AddFilter(L"vpn_app permit icmpv6 nd", layer, FWP_ACTION_PERMIT, 12,
+                      nd, 2);
+    }
+    // DHCPv6 lease renewal (client sends from 546 -> server 547).
+    FWPM_FILTER_CONDITION0 dhcp6[2] = {};
+    dhcp6[0].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
+    dhcp6[0].matchType = FWP_MATCH_EQUAL;
+    dhcp6[0].conditionValue.type = FWP_UINT8;
+    dhcp6[0].conditionValue.uint8 = 17;  // IPPROTO_UDP
+    dhcp6[1].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+    dhcp6[1].matchType = FWP_MATCH_EQUAL;
+    dhcp6[1].conditionValue.type = FWP_UINT16;
+    dhcp6[1].conditionValue.uint16 = 547;  // DHCPv6 server port
+    ok &= AddFilter(L"vpn_app permit dhcpv6", layer, FWP_ACTION_PERMIT, 12, dhcp6,
+                    2);
+  }
+
+  // The fence: block all other outbound. Lower weight than the permits, and HARD
+  // (CLEAR_ACTION_RIGHT) so a competing VPN/AV sublayer can't leak past it.
+  ok &= AddFilter(L"vpn_app block all", layer, FWP_ACTION_BLOCK, 0, nullptr, 0,
+                  /*hard=*/true);
   return ok;
 }
 
@@ -154,8 +215,20 @@ bool KillSwitchEngage(const std::vector<std::wstring>& permit_paths) {
     return false;
   }
 
+  // Resolve the tunnel interface LUID. ONE attempt — no Sleep here: this runs on
+  // the platform/message-pump thread, so blocking would freeze the UI. tun0 can
+  // lag the core's start, so the DART side retries fenceEngage with a delay
+  // between attempts (off the UI thread via `await`).
   NET_LUID luid = {};
-  const bool have_luid = TunLuid(&luid);
+  if (!TunLuid(&luid)) {
+    // No tunnel interface yet. A fence with no tun0 permit would BLOCK the user's
+    // OWN captured traffic (it egresses via tun0, which nothing permits) while the
+    // core still dials out fine — a silent self-DoS. Refuse; Dart treats false as
+    // fail-closed (retry, then don't run unprotected).
+    free_app_ids();
+    KillSwitchDisengage();
+    return false;
+  }
   UINT64 luid_val = luid.Value;
 
   if (UuidCreate(&g_sublayer) != RPC_S_OK) {
@@ -172,10 +245,8 @@ bool KillSwitchEngage(const std::vector<std::wstring>& permit_paths) {
   sub.weight = 0xFFFF;
   ok = ok && FwpmSubLayerAdd0(g_engine, &sub, nullptr) == ERROR_SUCCESS;
 
-  ok = ok && AddLayer(FWPM_LAYER_ALE_AUTH_CONNECT_V4, app_ids,
-                      have_luid ? &luid_val : nullptr);
-  ok = ok && AddLayer(FWPM_LAYER_ALE_AUTH_CONNECT_V6, app_ids,
-                      have_luid ? &luid_val : nullptr);
+  ok = ok && AddLayer(FWPM_LAYER_ALE_AUTH_CONNECT_V4, app_ids, &luid_val, false);
+  ok = ok && AddLayer(FWPM_LAYER_ALE_AUTH_CONNECT_V6, app_ids, &luid_val, true);
 
   if (ok) {
     ok = FwpmTransactionCommit0(g_engine) == ERROR_SUCCESS;

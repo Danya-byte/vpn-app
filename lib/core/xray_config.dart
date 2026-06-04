@@ -96,8 +96,13 @@ class XrayConfig {
     final trType = tr?['type']?.toString();
     if (trType == 'xhttp' || trType == 'splithttp') {
       stream['network'] = 'xhttp';
-      final x = <String, dynamic>{'mode': 'auto'};
-      if (tr!['path'] != null) x['path'] = tr['path'];
+      // Honor the link's xhttp `mode` (packet-up / stream-up / stream-one) — the
+      // sub-16KB-freeze lever under ТСПУ — instead of always 'auto'.
+      final mode = tr!['mode']?.toString();
+      final x = <String, dynamic>{
+        'mode': (mode != null && mode.isNotEmpty) ? mode : 'auto'
+      };
+      if (tr['path'] != null) x['path'] = tr['path'];
       if (tr['host'] != null) x['host'] = tr['host'];
       stream['xhttpSettings'] = x;
     } else if (trType == 'ws') {

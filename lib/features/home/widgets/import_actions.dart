@@ -134,7 +134,8 @@ Future<void> importDroppedContent(
     if (!trusted) {
       final host = Uri.tryParse(url)?.host;
       final go = await _confirmFetch(
-          context, host != null && host.isNotEmpty ? host : url);
+          context, host != null && host.isNotEmpty ? host : url,
+          insecure: url.startsWith('http://'));
       if (!context.mounted || go != true) return;
     }
     ImportResult fetched;
@@ -180,13 +181,17 @@ Future<bool?> _confirmExternalImport(
 }
 
 /// Consent before fetching an untrusted subscription URL (it leaks the IP).
-Future<bool?> _confirmFetch(BuildContext context, String host) {
+Future<bool?> _confirmFetch(BuildContext context, String host,
+    {bool insecure = false}) {
   final l = AppLocalizations.of(context);
+  final body = insecure
+      ? '${l.importFetchBody(host)}\n\n⚠ ${l.importFetchInsecure}'
+      : l.importFetchBody(host);
   return showGlassDialog<bool>(
     context,
     child: _ConsentDialog(
       title: l.importFetchTitle,
-      body: l.importFetchBody(host),
+      body: body,
       confirmLabel: l.importContinue,
     ),
   );
@@ -204,6 +209,7 @@ class _ImportPreview extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final n = node;
     final rows = <Widget>[];
+    var routesDirect = false;
     if (n != null && !n.isConfig) {
       final ob = n.outbound;
       rows.add(_kv(l.importProtocol, n.type));
@@ -212,7 +218,21 @@ class _ImportPreview extends StatelessWidget {
       final sni = tls is Map ? tls['server_name']?.toString() : null;
       if (sni != null && sni.isNotEmpty) rows.add(_kv('SNI', sni));
     } else if (n != null && n.isConfig) {
+      // A full sing-box config: surface what it ACTUALLY does so the user can
+      // judge it — the exit server(s) + whether it tunnels or routes everything
+      // DIRECT. A hostile config that sends all traffic direct = zero protection
+      // + deanonymisation, and would otherwise look identical to a real one.
+      final cfg = n.config!;
+      final outs = ((cfg['outbounds'] as List?) ?? const []).whereType<Map>();
+      final route = cfg['route'];
+      final finalTag = (route is Map ? route['final'] : null)?.toString();
+      final servers = outs.map((o) => o['server']).whereType<String>().toSet();
       rows.add(_kv(l.importProtocol, l.importConfigProfile));
+      if (servers.isNotEmpty) rows.add(_kv(l.importServer, servers.join(', ')));
+      if (finalTag != null && finalTag.isNotEmpty) {
+        rows.add(_kv(l.importExit, finalTag));
+      }
+      routesDirect = _configRoutesDirect(cfg);
     }
     final insecure = n?.insecure ?? false;
     return Padding(
@@ -229,6 +249,10 @@ class _ImportPreview extends StatelessWidget {
           if (insecure) ...[
             const SizedBox(height: 10),
             _InsecureWarn(label: l.insecureBadge),
+          ],
+          if (routesDirect) ...[
+            const SizedBox(height: 10),
+            _InsecureWarn(label: l.importRoutesDirect),
           ],
           const SizedBox(height: 14),
           Container(
@@ -344,6 +368,96 @@ class _InsecureWarn extends StatelessWidget {
       ],
     );
   }
+}
+
+// True if a full imported sing-box config effectively sends ALL traffic DIRECT
+// (zero protection / deanonymisation). Catches the evasions a naive
+// final=='direct' check misses: NO proxy outbound; the effective `route.final`
+// (resolved THROUGH selector/urltest `default`) lands on direct/block; or a
+// trailing catch-all rule (no narrowing matcher, or a global 0.0.0.0/0 ip_cidr)
+// routes everything to direct/block.
+bool _configRoutesDirect(Map cfg) {
+  const proxyTypes = {
+    'vless', 'vmess', 'trojan', 'hysteria2', 'tuic', 'shadowsocks',
+    'shadowtls', 'anytls', 'socks', 'http', 'wireguard'
+  };
+  final outs = ((cfg['outbounds'] as List?) ?? const []).whereType<Map>().toList();
+  if (!outs.any((o) => proxyTypes.contains(o['type']))) return true; // no proxy at all
+  Map? byTag(String? t) {
+    for (final o in outs) {
+      if (o['tag']?.toString() == t) return o;
+    }
+    return null;
+  }
+  // Resolve a tag to its effective leaf type, following selector/urltest default.
+  String? leaf(String? tag, [int depth = 0]) {
+    if (tag == null || depth > 6) return null;
+    final o = byTag(tag);
+    if (o == null) return (tag == 'direct' || tag == 'block') ? tag : null;
+    final t = o['type']?.toString();
+    if (t == 'selector' || t == 'urltest') {
+      final members =
+          (o['outbounds'] as List?)?.whereType<String>().toList() ?? const [];
+      final def = o['default']?.toString() ??
+          (members.isNotEmpty ? members.first : null);
+      return leaf(def, depth + 1);
+    }
+    return t;
+  }
+
+  final route = cfg['route'];
+  if (route is! Map) return false; // no route block → first outbound (a proxy) wins
+  // Effective final: explicit route.final, else sing-box uses the first outbound.
+  final eff = leaf(route['final']?.toString()) ??
+      leaf(outs.isNotEmpty ? outs.first['tag']?.toString() : null);
+  if (eff == 'direct' || eff == 'block') return true;
+  // Destination/identity matchers that genuinely NARROW which traffic a rule
+  // catches. `network`/`protocol`/`ip_version` are deliberately NOT here — a rule
+  // whose ONLY matcher is one of those still catches ~all browsing, so a hostile
+  // config hides an all-direct rule behind e.g. `network:["tcp","udp"]`.
+  const narrowing = {
+    'domain', 'domain_suffix', 'domain_keyword', 'domain_regex', 'geosite',
+    'rule_set', 'ip_cidr', 'geoip', 'source_ip_cidr', 'ip_is_private',
+    'process_name', 'process_path', 'package_name', 'wifi_ssid', 'port',
+    'source_port', 'clash_mode', 'inbound', 'user'
+  };
+  bool listHas(Object? v, Set<String> globals) {
+    if (v is List) return v.any((e) => globals.contains('$e'.trim()));
+    if (v is String) return globals.contains(v.trim());
+    return false;
+  }
+  final rules =
+      (route['rules'] as List?)?.whereType<Map>().toList() ?? const <Map>[];
+  for (final r in rules) {
+    final tgt = leaf(r['outbound']?.toString());
+    if (tgt != 'direct' && tgt != 'block') continue;
+    // A rule routing ~ALL traffic to direct/block = no protection. Catch: no
+    // narrowing matcher; a global IP (0.0.0.0/0, ::/0); or an all-matching domain
+    // matcher ("", ".", ".*") an attacker hides behind to look scoped.
+    final routesAll = !r.keys.any((k) => narrowing.contains(k)) ||
+        listHas(r['ip_cidr'], const {'0.0.0.0/0', '::/0'}) ||
+        listHas(r['domain_suffix'], const {'', '.'}) ||
+        listHas(r['domain_keyword'], const {''}) ||
+        listHas(r['domain'], const {''}) ||
+        _regexCatchAll(r['domain_regex']);
+    if (routesAll) return true;
+  }
+  return false;
+}
+
+// True if any domain_regex matches EVERYTHING — tested against sentinel hostnames
+// rather than a literal blocklist, so equivalents like `a|`, `[\s\S]*`, `(.|\n)*`
+// are all caught while a narrow regex (`^ads\.`) is not (no false-positive).
+bool _regexCatchAll(Object? v) {
+  final list = v is List ? v : (v is String ? [v] : const []);
+  const sentinels = ['example.com', 'a1.b2.example', 'xyz.test', '10.0.0.1'];
+  for (final rx in list) {
+    try {
+      final re = RegExp('$rx');
+      if (sentinels.every(re.hasMatch)) return true;
+    } catch (_) {/* invalid regex → not a catch-all */}
+  }
+  return false;
 }
 
 // A dropped/pasted blob that is a single http(s) URL and nothing else -> treat

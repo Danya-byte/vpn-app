@@ -1,4 +1,4 @@
-; Inno Setup script for VPN App — a proper Windows installer (Start-menu +
+; Inno Setup script for VPN App - a proper Windows installer (Start-menu +
 ; desktop shortcuts, optional run-at-login, clean uninstall) so non-technical
 ; RF users don't have to unzip-to-Program-Files by hand.
 ;
@@ -13,6 +13,13 @@
 #define AppPublisher "Danya-byte"
 #define AppExe "vpn_app.exe"
 #define SourceDir "..\build\windows\x64\runner\Release"
+
+; Fail the build EARLY if the cores aren't bundled - someone ran `iscc` directly
+; instead of tool\package.ps1 (which fetches the SHA-256-pinned sing-box+xray).
+; Otherwise the installer would ship a coreless app that can't connect at all.
+#if !FileExists(SourceDir + "\core\windows\sing-box.exe")
+  #error Cores missing in SourceDir. Run tool\package.ps1 (or fetch-cores.ps1) before iscc.
+#endif
 
 [Setup]
 AppId={{A7E3C92F-4B81-4D6A-9C05-1E2F3A4B5C6D}
@@ -65,3 +72,75 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 [UninstallDelete]
 ; Remove the generated runtime (config/cache/pids) but keep nothing sensitive behind.
 Type: filesandordirs; Name: "{localappdata}\vpn_app\run"
+
+[Code]
+const
+  InetKey = 'Software\Microsoft\Windows\CurrentVersion\Internet Settings';
+  BakKey  = 'Software\vpn_app';
+  INTERNET_OPTION_SETTINGS_CHANGED = 39;
+  INTERNET_OPTION_REFRESH = 37;
+
+function InternetSetOption(hInet, dwOption, lpBuffer, dwBufLen: Integer): Boolean;
+  external 'InternetSetOptionW@wininet.dll stdcall';
+
+function StartsWithLoopback(const s: String): Boolean;
+begin
+  Result := (Pos('127.0.0.1', s) = 1) or (Pos('localhost', s) = 1);
+end;
+
+// Mirror the native RestoreSystemProxy: put the user's ORIGINAL proxy back from
+// our backup (so we never strand their real proxy), else just disable a dead
+// loopback pointer of OURS, then signal WinINET so it takes effect immediately.
+procedure RestoreUserProxy();
+var
+  bakValid, bakEnable: Cardinal;
+  bakServer, bakOverride, curServer: String;
+  changed: Boolean;
+begin
+  changed := False;
+  if RegQueryDWordValue(HKCU, BakKey, 'BackupValid', bakValid) and (bakValid = 1) then
+  begin
+    if not RegQueryDWordValue(HKCU, BakKey, 'BackupEnable', bakEnable) then bakEnable := 0;
+    if not RegQueryStringValue(HKCU, BakKey, 'BackupServer', bakServer) then bakServer := '';
+    if not RegQueryStringValue(HKCU, BakKey, 'BackupOverride', bakOverride) then bakOverride := '';
+    RegWriteDWordValue(HKCU, InetKey, 'ProxyEnable', bakEnable);
+    RegWriteStringValue(HKCU, InetKey, 'ProxyServer', bakServer);
+    RegWriteStringValue(HKCU, InetKey, 'ProxyOverride', bakOverride);
+    RegWriteDWordValue(HKCU, BakKey, 'BackupValid', 0);
+    changed := True;
+  end
+  else if RegQueryStringValue(HKCU, InetKey, 'ProxyServer', curServer)
+          and StartsWithLoopback(curServer) then
+  begin
+    // Anchored (starts-with) so a real third-party proxy that merely mentions
+    // 127.0.0.1 in a later protocol field is left untouched.
+    RegWriteDWordValue(HKCU, InetKey, 'ProxyEnable', 0);
+    changed := True;
+  end;
+  if changed then
+  begin
+    InternetSetOption(0, INTERNET_OPTION_SETTINGS_CHANGED, 0, 0);
+    InternetSetOption(0, INTERNET_OPTION_REFRESH, 0, 0);
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurStep: TUninstallStep);
+var
+  rc: Integer;
+begin
+  if CurStep = usUninstall then
+  begin
+    // Kill the app + cores BEFORE removing files: the dynamic WFP kill-switch
+    // fence auto-purges with the process, and the .exe/DLLs unlock for deletion.
+    Exec(ExpandConstant('{sys}\taskkill.exe'),
+      '/F /IM vpn_app.exe /IM sing-box.exe /IM xray.exe',
+      '', SW_HIDE, ewWaitUntilTerminated, rc);
+    RestoreUserProxy(); // BEFORE deleting BakKey (it reads the backup)
+    // Remove app-written HKCU keys: proxy backup, link/scheme handlers, autostart.
+    RegDeleteKeyIncludingSubkeys(HKCU, BakKey);
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\vpn');
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\sing-box');
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\Applications\vpn_app.exe');
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'vpn_app');
+  end;
+end;

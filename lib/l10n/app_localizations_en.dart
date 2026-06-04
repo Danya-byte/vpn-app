@@ -33,6 +33,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statusConnected => 'Connected';
 
   @override
+  String get statusChecking => 'Checking connection…';
+
+  @override
   String get statusConnecting => 'Connecting…';
 
   @override
@@ -371,6 +374,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get importConfigProfile => 'sing-box config';
 
   @override
+  String get importExit => 'Default route';
+
+  @override
+  String get importRoutesDirect =>
+      'This config sends all traffic DIRECT — no VPN protection';
+
+  @override
   String get importConnectAction => 'Connect';
 
   @override
@@ -384,6 +394,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String importFetchBody(String host) {
     return '$host will receive your IP address and the app will load a server list it provides. Continue only if you trust this link.';
   }
+
+  @override
+  String get importFetchInsecure =>
+      'This is an http:// (cleartext) link — the server list can be tampered with on the way. Prefer an https:// link.';
 
   @override
   String get importContinue => 'Continue';
@@ -424,6 +438,14 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get errKillSwitchFailed =>
       'Kill-switch is ON but the firewall fence could not be installed — not connecting unprotected. Run the app as administrator, or turn the kill-switch off in Settings.';
+
+  @override
+  String get errProxyFailed =>
+      'Could not set the system proxy — not connecting (apps would go direct, unprotected). Check Windows proxy/registry permissions.';
+
+  @override
+  String get errXrayMissing =>
+      'This profile needs the xray bridge (xray.exe), which is missing from the install. Reinstall the app or restore xray.exe.';
 
   @override
   String updateAvailable(String version) {
@@ -514,13 +536,6 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get muxDesc =>
       'Carry many streams over one TLS connection — fewer connections for DPI to fingerprint. Skipped on Vision/QUIC.';
-
-  @override
-  String get echTitle => 'ECH — encrypt SNI';
-
-  @override
-  String get echDesc =>
-      'Encrypts the ClientHello so the SNI is fully hidden. Requires server-side ECH support.';
 
   @override
   String subDaysLeft(int days) {
@@ -616,17 +631,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get speedTestUploading => 'Upload…';
-
-  @override
-  String get desyncTitle => 'Unblock without a server';
-
-  @override
-  String get desyncDesc =>
-      'With NO server selected, Connect runs a local DPI-desync that unblocks THROTTLED sites (YouTube, Discord) by fragmenting the TLS handshake — zero config, no server. IP-blocked sites (Instagram, X) still need a server.';
-
-  @override
-  String get desyncHint =>
-      'No server — tap Connect to unblock YouTube/Discord locally';
 
   @override
   String get killSwitchActive => 'Kill-switch on';

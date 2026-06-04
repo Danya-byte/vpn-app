@@ -43,7 +43,6 @@ class SettingsPage extends ConsumerWidget {
     final tlsFp = ref.watch(settingsProvider.select((s) => s.tlsFingerprint));
     final logLevel = ref.watch(settingsProvider.select((s) => s.logLevel));
     final mux = ref.watch(settingsProvider.select((s) => s.mux));
-    final ech = ref.watch(settingsProvider.select((s) => s.ech));
     final autoAdapt = ref.watch(settingsProvider.select((s) => s.autoAdapt));
     final registerLinks =
         ref.watch(settingsProvider.select((s) => s.registerLinks));
@@ -53,9 +52,6 @@ class SettingsPage extends ConsumerWidget {
         ref.watch(settingsProvider.select((s) => s.closeToTray));
     final connectOnLaunch = ref.watch(
       settingsProvider.select((s) => s.connectOnLaunch),
-    );
-    final desyncDirect = ref.watch(
-      settingsProvider.select((s) => s.desyncDirect),
     );
     final killSwitchTun = ref.watch(
       settingsProvider.select((s) => s.killSwitchTun),
@@ -387,26 +383,6 @@ class SettingsPage extends ConsumerWidget {
               color: Colors.transparent,
               child: SwitchListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                title: Text(l.echTitle),
-                subtitle: Text(
-                  l.echDesc,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: scheme.onSurface.withValues(alpha: 0.6),
-                  ),
-                ),
-                value: ech,
-                onChanged: (v) => ref.read(settingsProvider.notifier).setEch(v),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          GlassCard(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            child: Material(
-              color: Colors.transparent,
-              child: SwitchListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                 title: Text(l.autoFailoverTitle),
                 subtitle: Text(
                   l.autoFailoverDesc,
@@ -439,27 +415,6 @@ class SettingsPage extends ConsumerWidget {
                 value: autoAdapt,
                 onChanged: (v) =>
                     ref.read(settingsProvider.notifier).setAutoAdapt(v),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          GlassCard(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            child: Material(
-              color: Colors.transparent,
-              child: SwitchListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                title: Text(l.desyncTitle),
-                subtitle: Text(
-                  l.desyncDesc,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: scheme.onSurface.withValues(alpha: 0.6),
-                  ),
-                ),
-                value: desyncDirect,
-                onChanged: (v) =>
-                    ref.read(settingsProvider.notifier).setDesyncDirect(v),
               ),
             ),
           ),

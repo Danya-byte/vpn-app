@@ -1,3 +1,19 @@
+1.0.1 (04.06.26)
+
+- Fix: imported subscriptions now connect even when they use a hosted DNS resolver (DoH/DoT) or DNS-based ad-blocking — these were being silently rejected at startup.
+- Fix: imported Reality configs that ship with uTLS turned off now connect instead of failing.
+- Kill-switch hardened: the firewall fence is now authoritative (a competing VPN/antivirus can't punch a hole in it), no longer leaks IPv6 ping, won't lock you out of DHCP/IPv6 network setup, and engages BEFORE the app ever shows "Connected".
+- Fix: the window no longer briefly freezes while connecting with the kill-switch on.
+- Fix: more imported configs connect on networks without working IPv6 (resolution is forced to IPv4).
+- Fix: the app no longer shows a green "Connected" with a stale ping and exit-IP during a brief outage — it shows "Checking…" until traffic really flows again (even with auto-adapt off).
+- Import preview now warns when a shared config would send all your traffic unprotected (direct) — including ones that hide it behind a selector or a catch-all rule.
+- Insecure Hysteria2/TUIC servers (certificate checks off) now raise the same warning + consent as other protocols — the password protects the client, not the server.
+- Fix: Connect is disabled (instead of a misleading "Connected") when no server is selected, or when a profile needs the xray bridge and it isn't installed.
+- Safer self-updating censorship facts: a bad or oversized update can no longer disable the feed or trigger needless server-hopping.
+- Hardened against malicious shared configs: DNS blocks, AmneziaWG .conf, and link fields are now validated/sanitised on import.
+- Fix: a clean uninstall now restores your original system proxy and removes leftover settings, so the internet keeps working afterwards.
+- Fix: no spurious "port busy" error when switching servers on a slow machine.
+
 1.0.0 (03.06.26)
 
 - One-tap connect with a live exit-IP check, latency, and a traffic graph.

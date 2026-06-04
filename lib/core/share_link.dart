@@ -361,7 +361,7 @@ class ShareLink {
   // --- per-protocol parsers ------------------------------------------------
 
   static ParsedNode? _vless(Uri u) {
-    final p = u.queryParameters;
+    final p = _clean(u.queryParameters);
     final security = p['security'] ?? 'none';
     // Reality without the server public key can never complete a handshake —
     // reject it instead of importing a node that silently fails to connect.
@@ -389,16 +389,16 @@ class ShareLink {
   static ParsedNode _vmess(String uri) {
     final j = jsonDecode(utf8.decode(base64.decode(_pad(uri.substring(8)))))
         as Map<String, dynamic>;
-    final server = j['add']?.toString() ?? '';
+    final server = _c(j['add']?.toString() ?? '');
     final port = int.tryParse(j['port']?.toString() ?? '') ?? 443;
-    final ps = j['ps']?.toString() ?? '';
+    final ps = _c(j['ps']?.toString() ?? '');
     final name = ps.isNotEmpty ? ps : '$server:$port';
     final ob = <String, dynamic>{
       'type': 'vmess',
       'tag': name,
       'server': server,
       'server_port': port,
-      'uuid': j['id']?.toString() ?? '',
+      'uuid': _c(j['id']?.toString() ?? ''),
       'security': (j['scy']?.toString().isNotEmpty ?? false)
           ? j['scy'].toString()
           : 'auto',
@@ -423,7 +423,7 @@ class ShareLink {
   }
 
   static ParsedNode _trojan(Uri u) {
-    final p = u.queryParameters;
+    final p = _clean(u.queryParameters);
     final name = _name(u, '${u.host}:${_port(u)}');
     final ob = <String, dynamic>{
       'type': 'trojan',
@@ -514,7 +514,7 @@ class ShareLink {
   }
 
   static ParsedNode _hysteria2(Uri u) {
-    final p = u.queryParameters;
+    final p = _clean(u.queryParameters);
     final name = _name(u, '${u.host}:${_port(u)}');
     final tls = <String, dynamic>{'enabled': true};
     if ((p['sni'] ?? '').isNotEmpty) tls['server_name'] = p['sni'];
@@ -536,7 +536,7 @@ class ShareLink {
   }
 
   static ParsedNode _tuic(Uri u) {
-    final p = u.queryParameters;
+    final p = _clean(u.queryParameters);
     final name = _name(u, '${u.host}:${_port(u)}');
     final ui = Uri.decodeComponent(u.userInfo);
     final ci = ui.indexOf(':');
@@ -587,7 +587,7 @@ class ShareLink {
   // anytls://password@host:port?sni=… — the newer AnyTLS wrapper (sing-box
   // native). A staple in fresh RF subs that we were silently dropping.
   static ParsedNode _anytls(Uri u) {
-    final p = u.queryParameters;
+    final p = _clean(u.queryParameters);
     final name = _name(u, '${u.host}:${_port(u)}');
     final tls = <String, dynamic>{'enabled': true};
     final sni = p['sni'] ?? p['peer'] ?? p['host'];
@@ -610,7 +610,7 @@ class ShareLink {
   // hysteria://host:port?auth=…&upmbps=…&downmbps=…&obfs=… — Hysteria v1 (distinct
   // from hysteria2). sing-box has a native `hysteria` outbound.
   static ParsedNode _hysteria(Uri u) {
-    final p = u.queryParameters;
+    final p = _clean(u.queryParameters);
     final name = _name(u, '${u.host}:${_port(u)}');
     final tls = <String, dynamic>{'enabled': true};
     final sni = p['peer'] ?? p['sni'];
@@ -639,6 +639,7 @@ class ShareLink {
 
   static Map<String, dynamic> _tls(Map<String, String> p,
       {bool reality = false}) {
+    p = _clean(p); // strip control chars from sni/host — covers the vmess path too
     final tls = <String, dynamic>{'enabled': true};
     final sni = p['sni'] ?? p['peer'] ?? p['host'];
     if (sni != null && sni.isNotEmpty) tls['server_name'] = sni;
@@ -664,6 +665,7 @@ class ShareLink {
   }
 
   static Map<String, dynamic>? _transport(Map<String, String> p) {
+    p = _clean(p); // strip CR/LF from path/host/Host — header-injection guard
     switch (p['type']) {
       case 'ws':
         final t = <String, dynamic>{'type': 'ws'};
@@ -703,10 +705,29 @@ class ShareLink {
 
   // --- helpers -------------------------------------------------------------
 
-  static int _port(Uri u) => u.hasPort ? u.port : 443;
+  // Strip control chars (CR/LF/NUL/...) from every decoded link param so a
+  // crafted link (e.g. `?host=a%0d%0aInjected:x`) can't smuggle a newline into a
+  // WS `Host` header / SNI / path — header-injection from untrusted share-links.
+  static Map<String, String> _clean(Map<String, String> p) =>
+      p.map((k, v) => MapEntry(k, _c(v)));
+
+  // Strip control chars from a single string (display name, vmess host, ...).
+  static String _c(String s) => s.replaceAll(RegExp(r'[\x00-\x1f]'), '');
+
+  static int _port(Uri u) {
+    if (!u.hasPort) return 443;
+    final p = u.port;
+    // Reject an out-of-range port (e.g. :99999): parse()'s try/catch turns this
+    // into a null node, so the link is dropped instead of emitting an outbound
+    // that can never connect (relying on the core to FATAL it later is fragile).
+    if (p < 1 || p > 65535) throw const FormatException('port out of range');
+    return p;
+  }
+
+  static int _vp(int? p) => (p != null && p >= 1 && p <= 65535) ? p : 443;
 
   static String _name(Uri u, String fallback) =>
-      u.fragment.isEmpty ? fallback : Uri.decodeComponent(u.fragment);
+      _c(u.fragment.isEmpty ? fallback : Uri.decodeComponent(u.fragment));
 
   static List<String> _csv(String s) =>
       s.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
@@ -720,8 +741,7 @@ class ShareLink {
         final host = s.substring(1, end);
         final rest = s.substring(end + 1);
         final colon = rest.indexOf(':');
-        final port =
-            colon >= 0 ? int.tryParse(rest.substring(colon + 1)) ?? 443 : 443;
+        final port = colon >= 0 ? _vp(int.tryParse(rest.substring(colon + 1))) : 443;
         return (host, port);
       }
     }
@@ -730,7 +750,7 @@ class ShareLink {
     // A bare IPv6 literal (multiple colons, no brackets) has no port — the last
     // colon is part of the address, not a separator.
     if (s.indexOf(':') != i) return (s, 443);
-    return (s.substring(0, i), int.tryParse(s.substring(i + 1)) ?? 443);
+    return (s.substring(0, i), _vp(int.tryParse(s.substring(i + 1))));
   }
 
   static String _pad(String b64) {

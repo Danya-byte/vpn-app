@@ -43,25 +43,33 @@ class HomePage extends ConsumerWidget {
           const _HomeTitle(),
           const SizedBox(height: 18),
           const _ProfileBar(),
+          // Center the stack when it fits, but SCROLL when it doesn't (small
+          // window + several status banners) — else the bottom items, including
+          // the fail-closed _UnblockButton, get pushed off-screen with no way to
+          // tap them out of a locked state.
           Expanded(
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const ConnectButton(),
-                  const SizedBox(height: 26),
-                  const _StatusLabel(),
-                  const SizedBox(height: 10),
-                  const _PingLabel(),
-                  const _ActiveServerLabel(),
-                  const SizedBox(height: 6),
-                  const _ExitIpLabel(),
-                  const _FenceBadge(),
-                  const _WhitelistBanner(),
-                  const _UnblockButton(),
-                  const _ProxyModeHint(),
-                  const _DesyncHint(),
-                ],
+            child: LayoutBuilder(
+              builder: (context, c) => SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: c.maxHeight),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const ConnectButton(),
+                      const SizedBox(height: 26),
+                      const _StatusLabel(),
+                      const SizedBox(height: 10),
+                      const _PingLabel(),
+                      const _ActiveServerLabel(),
+                      const SizedBox(height: 6),
+                      const _ExitIpLabel(),
+                      const _FenceBadge(),
+                      const _WhitelistBanner(),
+                      const _UnblockButton(),
+                      const _ProxyModeHint(),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -319,60 +327,6 @@ class _FenceChip extends StatelessWidget {
   }
 }
 
-/// When there's no server selected (and desync is on), make the headline
-/// no-server unblock DISCOVERABLE: a tappable CTA that launches it. Without
-/// this the feature was unreachable — a cold user only saw "tap to add".
-class _DesyncHint extends ConsumerWidget {
-  const _DesyncHint();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final l = AppLocalizations.of(context);
-    final scheme = Theme.of(context).colorScheme;
-    final noNode =
-        ref.watch(profilesProvider.select((p) => p.selectedNode == null));
-    final desync = ref.watch(settingsProvider.select((s) => s.desyncDirect));
-    final idle = ref
-        .watch(coreControllerProvider.select((s) => !s.isOn && !s.isBusy));
-    if (!noNode || !desync || !idle) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: 20),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () => ref.read(coreControllerProvider.notifier).start(),
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 300),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: scheme.primary.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: scheme.primary.withValues(alpha: 0.30)),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.bolt_rounded, size: 16, color: scheme.primary),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(l.desyncHint,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                          fontSize: 12,
-                          height: 1.3,
-                          color: scheme.onSurface.withValues(alpha: 0.85))),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// First-run / empty-state onboarding: a cold user with NO servers used to see
 /// just the power button + a tiny "tap to add" — closing the "empty screen with
 /// no path" gap. Shown only when the profile list is empty; a clear CTA opens the
@@ -491,9 +445,12 @@ class _StatusLabel extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     // Watch only the three fields shown — not the whole CoreState — so appended
     // log lines don't rebuild the status label (record select = structural eq).
-    final (status, error, detail) = ref.watch(coreControllerProvider
-        .select((s) => (s.status, s.error, s.detail)));
+    final (status, error, detail, dark) = ref.watch(coreControllerProvider
+        .select((s) => (s.status, s.error, s.detail, s.tunnelDark)));
     final (String label, Color color) = switch (status) {
+      // Up but carrying no traffic (watchdog dark window) — don't claim a solid
+      // "Connected"; show an honest amber "checking" until it recovers or acts.
+      CoreStatus.running when dark => (l.statusChecking, const Color(0xFFE0A53D)),
       CoreStatus.running => (l.statusConnected, scheme.primary),
       CoreStatus.starting => (l.statusConnecting, scheme.onSurface),
       CoreStatus.stopping => (l.statusDisconnecting, scheme.onSurface),
@@ -543,6 +500,8 @@ class _StatusLabel extends ConsumerWidget {
       CoreError.portInUse => l.errPortInUse,
       CoreError.wireguardHandshake => l.errWireguardHandshake,
       CoreError.killSwitchFailed => l.errKillSwitchFailed,
+      CoreError.proxyFailed => l.errProxyFailed,
+      CoreError.xrayMissing => l.errXrayMissing,
     };
   }
 }
@@ -554,13 +513,16 @@ class _PingLabel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final l = AppLocalizations.of(context);
-    final on = ref.watch(
-        coreControllerProvider.select((s) => s.status == CoreStatus.running));
+    final st = ref.watch(coreControllerProvider
+        .select((s) => (s.status == CoreStatus.running, s.tunnelDark)));
+    final on = st.$1;
+    final dark = st.$2;
     final ms = ref.watch(latencyProvider).value;
     if (!on) return const SizedBox(height: 22);
-    // Connected but the first probe hasn't returned (or it timed out): show a
-    // "measuring…" placeholder instead of a blank gap.
-    if (ms == null) {
+    // Connected but the first probe hasn't returned, OR the tunnel is dark right
+    // now (watchdog window): show "measuring…" — never a STALE green latency that
+    // contradicts the amber "Checking…" headline.
+    if (ms == null || dark) {
       return SizedBox(
         height: 22,
         child: Center(
@@ -594,8 +556,10 @@ class _ExitIpLabel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
+    final dark = ref.watch(coreControllerProvider.select((s) => s.tunnelDark));
     final ip = ref.watch(exitIpProvider).value;
-    if (ip == null) return const SizedBox(height: 16);
+    // Hide a STALE exit IP during the dark window — it would falsely reassure.
+    if (ip == null || dark) return const SizedBox(height: 16);
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [

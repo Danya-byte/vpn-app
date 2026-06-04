@@ -27,19 +27,19 @@ class ParsedNode {
       ? 'sing-box config'
       : (outbound['type']?.toString() ?? 'unknown');
 
-  /// True if this profile disables TLS certificate validation on a node where
-  /// that's a real MITM hole — surfaced as a warning badge so it's never silent.
-  /// Scans BOTH a single node's outbound AND an imported config's
-  /// `outbounds`/`endpoints` (the audit caught configs slipping through).
-  /// Excludes:
-  ///  - Reality (self-authenticates via the pinned key — `insecure` is moot), and
-  ///  - Hysteria2 / TUIC (authenticate the server via password/PSK beyond the
-  ///    cert, and self-signed is their norm — badging them just cries wolf).
+  /// True if this profile disables TLS certificate validation where that's a real
+  /// MITM hole — surfaced as a warning badge + a connect-consent so it's never
+  /// silent. Scans a single node's outbound AND an imported config's
+  /// `outbounds`/`endpoints`. Excludes ONLY Reality (it self-authenticates via the
+  /// pinned key, so `insecure` is moot). Hysteria2/TUIC are NOT excluded: their
+  /// password authenticates the CLIENT to the server, NOT the server to the
+  /// client — so `tls.insecure` still turns off SERVER authentication and is
+  /// MITM-able by an on-path attacker (= the ТСПУ operator). The auto-failover
+  /// cascade keeps using them (its own list excludes QUIC); this only flags +
+  /// gates a MANUAL connect.
   bool get insecure {
     bool risky(Object? o) {
       if (o is! Map) return false;
-      final type = o['type']?.toString();
-      if (type == 'hysteria2' || type == 'tuic') return false;
       final tls = o['tls'];
       return tls is Map && tls['insecure'] == true && tls['reality'] == null;
     }

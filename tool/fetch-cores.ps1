@@ -1,5 +1,5 @@
 <#
-  fetch-cores.ps1 — populates core\windows\ with proxy core binaries.
+  fetch-cores.ps1 - populates core\windows\ with proxy core binaries.
 
     sing-box.exe  master engine (TUN / routing / DNS / Clash API)
     wintun.dll    Windows TUN driver, required by sing-box TUN inbound
@@ -91,7 +91,7 @@ $wtDll = (Get-ChildItem -Recurse $wtDir -Filter $Wintun.Dll | Where-Object { $_.
 Install-Verified $wtDll $Wintun.Dll $Wintun.Sha
 
 # --- rule-sets (routing data: control direct-vs-proxy, so tampering = a LEAK) ---
-# Hash-pinned like the binaries. They DO update upstream — bumping one is a
+# Hash-pinned like the binaries. They DO update upstream - bumping one is a
 # deliberate, tested change: re-paste the new SHA-256 here when you update it.
 $rsDir = Join-Path (Split-Path $Dest -Parent) 'rule-sets'
 New-Item -ItemType Directory -Force $rsDir | Out-Null

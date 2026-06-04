@@ -365,7 +365,8 @@ void main() {
     expect(log['level'], 'warn');
   });
 
-  test('fromConfig forces ipv4_only but honors an explicit IPv6 strategy', () {
+  test('fromConfig forces ipv4_only for EVERY import (RF has no reliable v6)',
+      () {
     Map<String, dynamic> withStrategy(String? s) => {
           'dns': {
             'servers': [{'type': 'https', 'tag': 'd', 'server': '1.1.1.1'}],
@@ -381,11 +382,13 @@ void main() {
     String stratOf(Map<String, dynamic> raw) =>
         (SingBoxConfig.fromConfig(raw)['dns'] as Map)['strategy'] as String;
     expect(stratOf(withStrategy(null)), 'ipv4_only', reason: 'RF default');
-    expect(stratOf(withStrategy('prefer_ipv4')), 'ipv4_only',
-        reason: 'v4-first normalizes to ipv4_only for RF');
-    expect(stratOf(withStrategy('prefer_ipv6')), 'prefer_ipv6',
-        reason: 'a deliberate IPv6 choice must survive');
-    expect(stratOf(withStrategy('ipv6_only')), 'ipv6_only');
+    expect(stratOf(withStrategy('prefer_ipv4')), 'ipv4_only');
+    // RF reality wins over the author's global-world assumption: a config that
+    // requested prefer_ipv6 / ipv6_only is normalized to ipv4_only so the core
+    // never dials a dead AAAA ("unreachable network"). v4 always works in RF; the
+    // TUN still captures any v6 so nothing leaks.
+    expect(stratOf(withStrategy('prefer_ipv6')), 'ipv4_only');
+    expect(stratOf(withStrategy('ipv6_only')), 'ipv4_only');
   });
 
   test('fromConfig preserves clash_mode rules (Global/Direct switching)', () {

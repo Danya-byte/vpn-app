@@ -146,6 +146,12 @@ abstract class AppLocalizations {
   /// **'Connected'**
   String get statusConnected;
 
+  /// No description provided for @statusChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking connection…'**
+  String get statusChecking;
+
   /// No description provided for @statusConnecting.
   ///
   /// In en, this message translates to:
@@ -764,6 +770,18 @@ abstract class AppLocalizations {
   /// **'sing-box config'**
   String get importConfigProfile;
 
+  /// No description provided for @importExit.
+  ///
+  /// In en, this message translates to:
+  /// **'Default route'**
+  String get importExit;
+
+  /// No description provided for @importRoutesDirect.
+  ///
+  /// In en, this message translates to:
+  /// **'This config sends all traffic DIRECT — no VPN protection'**
+  String get importRoutesDirect;
+
   /// No description provided for @importConnectAction.
   ///
   /// In en, this message translates to:
@@ -787,6 +805,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{host} will receive your IP address and the app will load a server list it provides. Continue only if you trust this link.'**
   String importFetchBody(String host);
+
+  /// No description provided for @importFetchInsecure.
+  ///
+  /// In en, this message translates to:
+  /// **'This is an http:// (cleartext) link — the server list can be tampered with on the way. Prefer an https:// link.'**
+  String get importFetchInsecure;
 
   /// No description provided for @importContinue.
   ///
@@ -847,6 +871,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Kill-switch is ON but the firewall fence could not be installed — not connecting unprotected. Run the app as administrator, or turn the kill-switch off in Settings.'**
   String get errKillSwitchFailed;
+
+  /// No description provided for @errProxyFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not set the system proxy — not connecting (apps would go direct, unprotected). Check Windows proxy/registry permissions.'**
+  String get errProxyFailed;
+
+  /// No description provided for @errXrayMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'This profile needs the xray bridge (xray.exe), which is missing from the install. Reinstall the app or restore xray.exe.'**
+  String get errXrayMissing;
 
   /// No description provided for @updateAvailable.
   ///
@@ -1009,18 +1045,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Carry many streams over one TLS connection — fewer connections for DPI to fingerprint. Skipped on Vision/QUIC.'**
   String get muxDesc;
-
-  /// No description provided for @echTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'ECH — encrypt SNI'**
-  String get echTitle;
-
-  /// No description provided for @echDesc.
-  ///
-  /// In en, this message translates to:
-  /// **'Encrypts the ClientHello so the SNI is fully hidden. Requires server-side ECH support.'**
-  String get echDesc;
 
   /// No description provided for @subDaysLeft.
   ///
@@ -1189,24 +1213,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Upload…'**
   String get speedTestUploading;
-
-  /// No description provided for @desyncTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Unblock without a server'**
-  String get desyncTitle;
-
-  /// No description provided for @desyncDesc.
-  ///
-  /// In en, this message translates to:
-  /// **'With NO server selected, Connect runs a local DPI-desync that unblocks THROTTLED sites (YouTube, Discord) by fragmenting the TLS handshake — zero config, no server. IP-blocked sites (Instagram, X) still need a server.'**
-  String get desyncDesc;
-
-  /// No description provided for @desyncHint.
-  ///
-  /// In en, this message translates to:
-  /// **'No server — tap Connect to unblock YouTube/Discord locally'**
-  String get desyncHint;
 
   /// No description provided for @killSwitchActive.
   ///

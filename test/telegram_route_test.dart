@@ -7,7 +7,9 @@ import 'package:vpn_app/core/singbox_config.dart';
 /// messaging and calls ride the foreign tunnel. These lock the routing shape
 /// without a live network.
 void main() {
-  Map<String, dynamic> imported(String finalTag, [List<dynamic>? rules]) => {
+  Map<String, dynamic> imported(String finalTag,
+          [List<dynamic> rules = const []]) =>
+      {
         'outbounds': [
           {
             'type': 'vless',
@@ -19,15 +21,15 @@ void main() {
           },
           {'type': 'direct', 'tag': 'direct'},
         ],
-        'route': {'final': finalTag, if (rules != null) 'rules': rules},
+        'route': {'final': finalTag, 'rules': rules},
       };
 
-  List<Map> _rules(Map<String, dynamic> cfg) =>
+  List<Map> rulesOf(Map<String, dynamic> cfg) =>
       (cfg['route'] as Map)['rules'] == null
           ? const []
           : ((cfg['route'] as Map)['rules'] as List).cast<Map>();
 
-  String _join(dynamic v) => v is List ? v.join(',') : '${v ?? ''}';
+  String joinv(dynamic v) => v is List ? v.join(',') : '${v ?? ''}';
 
   setUp(() => SingBoxConfig.telegramUnblock = true);
   tearDown(() => SingBoxConfig.telegramUnblock = true);
@@ -35,12 +37,12 @@ void main() {
   test('pins Telegram DC CIDRs + domains to the proxy (TCP+UDP, no network filter)',
       () {
     final cfg = SingBoxConfig.fromConfig(imported('px'));
-    final rules = _rules(cfg);
+    final rules = rulesOf(cfg);
     final cidrRule = rules.firstWhere(
-        (r) => _join(r['ip_cidr']).contains('149.154.160.0/20'),
+        (r) => joinv(r['ip_cidr']).contains('149.154.160.0/20'),
         orElse: () => {});
     final domRule = rules.firstWhere(
-        (r) => _join(r['domain_suffix']).contains('t.me'),
+        (r) => joinv(r['domain_suffix']).contains('t.me'),
         orElse: () => {});
     expect(cidrRule['outbound'], 'px', reason: 'TG IPs → the proxy exit');
     expect(domRule['outbound'], 'px', reason: 'TG domains → the proxy exit');
@@ -50,9 +52,9 @@ void main() {
 
   test('Telegram pin sits BEFORE the private/RU-direct rules (it wins)', () {
     final cfg = SingBoxConfig.fromConfig(imported('px'));
-    final rules = _rules(cfg);
+    final rules = rulesOf(cfg);
     final tgAt =
-        rules.indexWhere((r) => _join(r['ip_cidr']).contains('149.154.16'));
+        rules.indexWhere((r) => joinv(r['ip_cidr']).contains('149.154.16'));
     final privAt = rules.indexWhere((r) => r['ip_is_private'] == true);
     expect(tgAt, greaterThanOrEqualTo(0));
     if (privAt >= 0) {
@@ -65,8 +67,8 @@ void main() {
       () {
     final cfg = SingBoxConfig.fromConfig(imported('direct'));
     expect(
-        _rules(cfg)
-            .any((r) => _join(r['ip_cidr']).contains('149.154.16')),
+        rulesOf(cfg)
+            .any((r) => joinv(r['ip_cidr']).contains('149.154.16')),
         isFalse);
   });
 
@@ -75,8 +77,8 @@ void main() {
         'px', [
       {'domain_suffix': ['t.me'], 'outbound': 'direct'},
     ]));
-    final pinned = _rules(cfg).where((r) =>
-        r['outbound'] == 'px' && _join(r['ip_cidr']).contains('149.154.16'));
+    final pinned = rulesOf(cfg).where((r) =>
+        r['outbound'] == 'px' && joinv(r['ip_cidr']).contains('149.154.16'));
     expect(pinned, isEmpty, reason: 'author Telegram routing left intact');
   });
 
@@ -84,8 +86,8 @@ void main() {
     SingBoxConfig.telegramUnblock = false;
     final cfg = SingBoxConfig.fromConfig(imported('px'));
     expect(
-        _rules(cfg)
-            .any((r) => _join(r['ip_cidr']).contains('149.154.16')),
+        rulesOf(cfg)
+            .any((r) => joinv(r['ip_cidr']).contains('149.154.16')),
         isFalse);
   });
 }

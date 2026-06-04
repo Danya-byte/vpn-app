@@ -42,6 +42,25 @@ void main() {
     expect(n.insecure, isFalse);
   });
 
+  test('insecure Hysteria2/TUIC ARE flagged (password auths client, not server)',
+      () {
+    for (final type in ['hysteria2', 'tuic']) {
+      final n = config({
+        'outbounds': [
+          {
+            'type': type,
+            'tag': 'x',
+            'server': 'a.com',
+            'password': 'p',
+            'tls': {'enabled': true, 'insecure': true},
+          },
+        ],
+      });
+      expect(n.insecure, isTrue,
+          reason: '$type with insecure:true disables SERVER auth → MITM-able');
+    }
+  });
+
   test('an insecure entry parked under `endpoints` is also caught', () {
     final n = config({
       'outbounds': [

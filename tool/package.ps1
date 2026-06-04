@@ -1,16 +1,16 @@
 <#
-  package.ps1 — build + package a portable Windows release.
+  package.ps1 - build + package a portable Windows release.
 
   Builds the release app with the version/commit stamped in (so About reports the
   exact build), bundles the SHA-256-verified cores + rule-sets + the license and
   third-party notices, and zips it to dist\. CorePaths resolves core\windows\ next
   to the executable, so the cores are copied beside vpn_app.exe inside the archive
-  — extract-and-run, no installer.
+  - extract-and-run, no installer.
 
   The release ships UNSIGNED, on purpose: this is open-source with public releases,
   so the published .sha256 is the integrity check (verify it against the release
-  page). An Authenticode cert only suppresses the SmartScreen prompt — a UX nicety,
-  not a security property — so we don't require one. (If you ever want it, sign the
+  page). An Authenticode cert only suppresses the SmartScreen prompt - a UX nicety,
+  not a security property - so we don't require one. (If you ever want it, sign the
   artifacts in dist\ yourself before uploading; nothing here depends on it.)
 
     pwsh tool\package.ps1
@@ -56,7 +56,7 @@ if (Test-Path $rsSrc) {
 $license = Join-Path $root 'LICENSE'
 $notices = Join-Path $root 'THIRD_PARTY_NOTICES.md'
 if (Test-Path $license) { Copy-Item $license (Join-Path $rel 'LICENSE.txt') -Force }
-else { Write-Warning 'LICENSE missing — GPL-3.0 distribution requires it' }
+else { Write-Warning 'LICENSE missing - GPL-3.0 distribution requires it' }
 if (Test-Path $notices) { Copy-Item $notices $rel -Force }
 else { Write-Warning 'THIRD_PARTY_NOTICES.md missing' }
 $copying = Join-Path $root 'COPYING'
@@ -89,7 +89,7 @@ if ($iscc) {
     Write-Output "Installer: $setup"
   }
 } else {
-  Write-Host 'iscc not found — skipping installer (install Inno Setup to build it)'
+  Write-Host 'iscc not found - skipping installer (install Inno Setup to build it)'
 }
 
 $mb = [math]::Round((Get-Item $zip).Length / 1MB, 1)

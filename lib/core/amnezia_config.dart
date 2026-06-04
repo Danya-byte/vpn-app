@@ -53,19 +53,37 @@ class AmneziaConfig {
     final port = peer['port'];
     if (pub == null || server == null || port == null) return null;
 
-    final address = (endpoint['address'] as List?)?.join(', ') ?? '10.0.0.2/32';
-    final allowed = (peer['allowed_ips'] as List?)?.join(', ') ?? '0.0.0.0/0';
-    final awg = (endpoint['_amneziawg'] as Map).cast<String, dynamic>();
+    // The .conf is UNTRUSTED (imported from a link/QR/drop). REJECT on any
+    // malformed structural field so a hostile value can't rebind the peer /
+    // endpoint or inject INI structure (a second [Socks5] binding public, etc.):
+    // keys must be base64, host must have no structural/space chars, port + CIDR
+    // lists must be well-formed. (Amnezia I1-I5 junk params legitimately carry
+    // `<...>` tokens, so those keep the CR/LF strip — without a newline a param
+    // value can't open a new section/directive anyway.)
+    if (!_okKey(priv) || !_okKey(pub)) return null;
+    if (!_okHost(server)) return null;
+    final portNum = port is num ? port.toInt() : int.tryParse('$port');
+    if (portNum == null || portNum < 1 || portNum > 65535) return null;
     final psk = (peer['pre_shared_key'] ?? '').toString();
+    if (psk.isNotEmpty && !_okKey(psk)) return null;
+    final address =
+        endpoint['address'] == null ? '10.0.0.2/32' : _cidrList(endpoint['address']);
+    final allowed =
+        peer['allowed_ips'] == null ? '0.0.0.0/0' : _cidrList(peer['allowed_ips']);
+    if (address == null || allowed == null) return null; // present but malformed
+    final awg =
+        (endpoint['_amneziawg'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final mtu = endpoint['mtu'];
+    final mtuNum = mtu is num ? mtu.toInt() : int.tryParse('${mtu ?? ''}');
 
     final b = StringBuffer()
       ..writeln('[Interface]')
       ..writeln('PrivateKey = $priv')
       ..writeln('Address = $address');
-    if (endpoint['mtu'] != null) b.writeln('MTU = ${endpoint['mtu']}');
+    if (mtuNum != null && mtuNum > 0) b.writeln('MTU = $mtuNum');
     // Amnezia obfuscation params (only those present), canonical casing + order.
     _params.forEach((lower, canon) {
-      if (awg[lower] != null) b.writeln('$canon = ${awg[lower]}');
+      if (awg[lower] != null) b.writeln('$canon = ${_ini(awg[lower])}');
     });
     b
       ..writeln()
@@ -73,7 +91,7 @@ class AmneziaConfig {
       ..writeln('PublicKey = $pub');
     if (psk.isNotEmpty) b.writeln('PresharedKey = $psk');
     b
-      ..writeln('Endpoint = $server:$port')
+      ..writeln('Endpoint = ${_bracket(server)}:$portNum')
       ..writeln('AllowedIPs = $allowed')
       ..writeln()
       // wireproxy exposes the tunnel as a local SOCKS5 — what sing-box dials.
@@ -81,4 +99,30 @@ class AmneziaConfig {
       ..writeln('BindAddress = 127.0.0.1:$socksPort');
     return b.toString();
   }
+
+  static final _b64Re = RegExp(r'^[A-Za-z0-9+/=_-]+$'); // WG key (std + urlsafe)
+  static final _hostRe = RegExp(r'^[A-Za-z0-9._\-:\[\]]+$'); // host(_ ok) / IPv4 / [IPv6]
+  static bool _okKey(String v) =>
+      v.isNotEmpty && v.length <= 128 && _b64Re.hasMatch(v);
+  static bool _okHost(String v) =>
+      v.isNotEmpty && v.length <= 255 && _hostRe.hasMatch(v);
+  // Wrap a bare IPv6 literal in [...] for the wireproxy `Endpoint = host:port`.
+  static String _bracket(String h) =>
+      (h.contains(':') && !h.startsWith('[')) ? '[$h]' : h;
+  // Validate + re-join an IP/CIDR list; null if any element is malformed.
+  static String? _cidrList(Object? v) {
+    if (v is! List || v.isEmpty) return null;
+    final re = RegExp(r'^[0-9a-fA-F:.]+(/\d{1,3})?$');
+    final parts = <String>[];
+    for (final e in v) {
+      final s = '$e'.trim();
+      if (s.isEmpty || s.length > 64 || !re.hasMatch(s)) return null;
+      parts.add(s);
+    }
+    return parts.join(', ');
+  }
+
+  // Last-resort line-injection guard for the free-form Amnezia params (I1-I5 may
+  // carry `<...>` tokens, so they aren't strictly validated above).
+  static String _ini(Object? v) => '$v'.replaceAll(RegExp(r'[\r\n]'), '');
 }

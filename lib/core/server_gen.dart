@@ -156,7 +156,7 @@ class ServerGen {
     return ServerBundle(
       serverConfig: serverConfig,
       clientLinks: links,
-      setupScript: _setupScript(cfgJson, port, hy2Port, hy2),
+      setupScript: _setupScript(cfgJson, port, hy2Port, hy2, sni),
       publicKey: publicKey,
     );
   }
@@ -259,8 +259,8 @@ class ServerGen {
       clientConfig: clientConfig,
       relayServerConfig: relayServer,
       exitServerConfig: exitServer,
-      relaySetupScript: _setupScript(json(relayServer), relayPort, 0, false),
-      exitSetupScript: _setupScript(json(exitServer), exitPort, 0, false),
+      relaySetupScript: _setupScript(json(relayServer), relayPort, 0, false, relaySni),
+      exitSetupScript: _setupScript(json(exitServer), exitPort, 0, false, exitSni),
     );
   }
 
@@ -369,11 +369,17 @@ class ServerGen {
     return null;
   }
 
-  static String _setupScript(String cfgJson, int port, int hy2Port, bool hy2) {
+  static String _setupScript(
+      String cfgJson, int port, int hy2Port, bool hy2, String sni) {
+    // Self-signed cert with CN == the link's SNI, so the cert identity matches
+    // what the client expects — a user who later pins the cert / drops insecure=1
+    // has a consistent identity (hy2 share-links carry no pinSHA256 yet; the
+    // insecure badge flags the gap meanwhile).
+    final cn = sni.isEmpty ? 'www.bing.com' : sni;
     final cert = hy2
         ? 'openssl req -x509 -newkey rsa:2048 -nodes '
             '-keyout /etc/sing-box/key.pem -out /etc/sing-box/cert.pem '
-            '-days 3650 -subj "/CN=bing.com"\n'
+            '-days 3650 -subj "/CN=$cn"\n'
         : '';
     final udp =
         hy2 ? 'command -v ufw >/dev/null && ufw allow $hy2Port/udp || true\n' : '';

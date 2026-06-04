@@ -39,7 +39,16 @@ class CensorshipFactsController extends Notifier<CensorshipFacts> {
       req.headers.set(HttpHeaders.userAgentHeader, 'vpn-app');
       final resp = await req.close().timeout(const Duration(seconds: 12));
       if (resp.statusCode != 200) return false; // 404 (no feed yet) → no-op
-      final body = await resp.transform(utf8.decoder).join();
+      // Cap the body BEFORE buffering/parsing — a hostile/compromised host could
+      // otherwise stream gigabytes into jsonDecode (OOM). The feed is a few KB.
+      const maxBytes = 256 * 1024;
+      if (resp.contentLength > maxBytes) return false;
+      final bytes = <int>[];
+      await for (final chunk in resp) {
+        bytes.addAll(chunk);
+        if (bytes.length > maxBytes) return false; // runaway body → bail
+      }
+      final body = utf8.decode(bytes, allowMalformed: true);
       final facts = CensorshipFacts.parse(body, haveVersion: state.version);
       if (facts == null) return false; // not newer / not an object
       CensorshipFacts.apply(facts);

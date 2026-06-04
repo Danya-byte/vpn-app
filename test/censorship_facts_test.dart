@@ -65,10 +65,22 @@ void main() {
       expect(f.freezeProbeUrl, CensorshipFacts.defaults.freezeProbeUrl);
     });
 
-    test('threshold is clamped to a sane KB window', () {
+    test('threshold is clamped to a sane KB window AND to the probe payload', () {
+      // Default probe is 64KB → a high threshold is clamped to ~90% of it (57KB)
+      // so the bulk-probe stays SATISFIABLE (no permanent false-freeze → no
+      // endless transport hops). This is the anti-self-DoS clamp.
       expect(
           CensorshipFacts.parse(
                   jsonEncode({'version': 1, 'freezeThresholdKb': 999}))!
+              .freezeThresholdKb,
+          57);
+      // A big probe lets the 256 KB ceiling apply.
+      expect(
+          CensorshipFacts.parse(jsonEncode({
+            'version': 1,
+            'freezeProbeUrl': 'https://speed.example.com/__down?bytes=10485760',
+            'freezeThresholdKb': 999,
+          }))!
               .freezeThresholdKb,
           256);
       expect(
@@ -76,6 +88,22 @@ void main() {
                   jsonEncode({'version': 1, 'freezeThresholdKb': 1}))!
               .freezeThresholdKb,
           8);
+    });
+
+    test('an implausibly-large version is rejected (poison → no channel brick)',
+        () {
+      // An int64-max-ish poison would otherwise permanently win the monotonic
+      // check and persist to the cache, bricking the data-push channel.
+      expect(CensorshipFacts.parse(jsonEncode({'version': 99999999999999})),
+          isNull);
+      expect(CensorshipFacts.parse(jsonEncode({'version': 4102444800001})),
+          isNull);
+      // A small counter, a date (YYYYMMDD), and epoch-millis all still apply
+      // (the ceiling admits real versioning schemes, just not a poison).
+      expect(CensorshipFacts.parse(jsonEncode({'version': 7})), isNotNull);
+      expect(CensorshipFacts.parse(jsonEncode({'version': 20260601})), isNotNull);
+      expect(CensorshipFacts.parse(jsonEncode({'version': 1700000000000})),
+          isNotNull);
     });
 
     test('missing/empty desyncDomains → baked defaults (never an empty list)',

@@ -344,17 +344,22 @@ class SingBoxConfig {
       final isReality = reality is Map && reality['enabled'] != false;
       final utls = (t['utls'] as Map?)?.cast<String, dynamic>();
       if (isReality) {
-        // Only normalize a missing/synthetic Reality fp to chrome; leave a real
-        // author-chosen browser fp intact. Auto-adapt must not corrupt the very
-        // handshake fingerprint of the Reality nodes it's trying to rescue.
+        // Reality REQUIRES utls ENABLED — the X25519 key_share rides the uTLS
+        // ClientHello, so an import carrying utls.enabled:false FATALs the core.
+        // Force enabled:true ALWAYS; only normalize a missing/synthetic fp to
+        // chrome, leaving a real author-chosen browser fp intact (auto-adapt must
+        // not corrupt the handshake fingerprint of the Reality nodes it rescues).
         final cur = utls?['fingerprint']?.toString();
-        if (cur == null ||
+        final needsFp = cur == null ||
             cur.isEmpty ||
             cur == 'randomized' ||
             cur == 'random' ||
-            cur == 'yandex') {
-          t['utls'] = {...?utls, 'enabled': true, 'fingerprint': 'chrome'};
-        }
+            cur == 'yandex';
+        t['utls'] = {
+          ...?utls,
+          'enabled': true,
+          'fingerprint': needsFp ? 'chrome' : cur,
+        };
       } else {
         if (isTcpProxy && fp.isNotEmpty && fp != 'randomized') {
           final useFp = fp == 'yandex' ? 'chrome' : fp; // no literal 'yandex'
@@ -669,24 +674,65 @@ class SingBoxConfig {
       // core FATALs requiring ENABLE_DEPRECATED_LEGACY_DNS_FAKEIP_OPTIONS — the
       // same startup-deadlock class as the original "never connected in RF").
       final fakeipBlock = dns['fakeip'] as Map?;
+      final droppedDns = <String>{};
       dns['servers'] = _migrateDnsServers(dns['servers'] as List?,
-          dropped: dropped, fakeip: fakeipBlock);
+          dropped: dropped, fakeip: fakeipBlock, droppedDns: droppedDns);
       dns.remove('fakeip');
       var rules =
           _migrateRules(dns['rules'] as List?, const {}, const {}, forDns: true);
       if (droppedRs.isNotEmpty) {
         rules = _dropRuleSet(rules, droppedRs, forDns: true);
       }
-      dns['rules'] = rules;
-      // RF networks usually have no working IPv6: force A-only so we never hand a
-      // dead AAAA to a dial ("unreachable network", battle-confirmed). HONOR only
-      // an explicit IPv6-WANTING strategy (prefer_ipv6 / ipv6_only) so a
-      // deliberately dual-stack or v6-only config still works; absent/ipv4/
-      // prefer_ipv4 all normalize to ipv4_only.
-      final s = dns['strategy']?.toString();
-      if (s != 'prefer_ipv6' && s != 'ipv6_only') {
-        dns['strategy'] = 'ipv4_only';
+      // A DNS rule whose `server:` action pointed at a dropped resolver (unknown
+      // type) is now dangling -> drop it; repoint dns.final off a dropped server.
+      if (droppedDns.isNotEmpty) {
+        rules = rules
+            .where((r) =>
+                !(r is Map && droppedDns.contains(r['server']?.toString())))
+            .toList();
+        if (droppedDns.contains(dns['final']?.toString())) {
+          // Don't let `final` fall through to the injected direct bootstrap (a
+          // plaintext RU resolver that honors RKN poisoning) — repoint to a
+          // surviving REAL resolver, preferring one detoured through the tunnel
+          // (the "remote" role the dropped final likely had). Last resort: remove.
+          String? pick;
+          for (final s in (dns['servers'] as List).whereType<Map>()) {
+            final t = s['tag']?.toString();
+            if (t == null || t == 'dns-bootstrap') continue;
+            pick ??= t;
+            if (s['detour'] != null) {
+              pick = t;
+              break;
+            }
+          }
+          if (pick != null) {
+            dns['final'] = pick;
+          } else {
+            dns.remove('final');
+          }
+        }
+        // Same for route.default_domain_resolver: a dropped target FATALs the core
+        // ("default domain resolver not found"). Repoint to a direct resolver
+        // (prefers IP/local), else remove (the block below re-adds one if needed).
+        final ddr =
+            (route?['default_domain_resolver'] as Map?)?['server']?.toString();
+        if (ddr != null && droppedDns.contains(ddr)) {
+          final tag = _directResolverTag(dns['servers'] as List?);
+          if (tag != null) {
+            route!['default_domain_resolver'] = {'server': tag};
+          } else {
+            route!.remove('default_domain_resolver');
+          }
+        }
       }
+      dns['rules'] = rules;
+      // RF networks have no reliable IPv6: force A-only for EVERY imported config
+      // so the core never hands a dead AAAA to a dial ("unreachable network",
+      // battle-confirmed). Even a config that explicitly requested prefer_ipv6 /
+      // ipv6_only (a global-world default) is normalized — v4 always works in RF,
+      // and the TUN still captures any v6 so nothing leaks. RF reality wins over
+      // the author's assumption.
+      dns['strategy'] = 'ipv4_only';
       // 1.13 wants an explicit direct resolver for dial-field domains; without
       // it the core warns now and FATALs in 1.14. Point it at a direct server.
       if (route != null && route['default_domain_resolver'] == null) {
@@ -871,6 +917,12 @@ class SingBoxConfig {
       } else if (ob != null && blockTags.contains(ob)) {
         r.remove('outbound');
         r['action'] = 'reject';
+      } else if (forDns && ob != null) {
+        // A DNS rule's `outbound` is a REMOVED matcher (sing-box 1.12), not an
+        // action ref — it FATALs the core (the deprecated-shim env only tolerates
+        // it on <=1.13). Drop it; the rule's `server:` action still applies, just
+        // to a wider match. (Route rules KEEP `outbound` — there it's the action.)
+        r.remove('outbound');
       }
       // Logical rule (and/or): migrate its nested rules too; drop it only if they
       // all disappear. (The old whitelist dropped logical rules outright.)
@@ -931,8 +983,29 @@ class SingBoxConfig {
   // connect) — strip the dangling detour. [fakeip] = the top-level dns.fakeip
   // block: a legacy `{address:'fakeip'}` server migrates to a typed fakeip
   // server pulling its ranges from there (else the core FATALs at startup).
+  // DNS server types the bundled sing-box (1.13) accepts. Anything else (e.g. a
+  // legacy `rcode://success` / `reject://` block server) has no such type -> drop
+  // it + scrub refs (DisallowUnknownFields would FATAL the whole config).
+  static const _validDnsTypes = {
+    'udp', 'tcp', 'tls', 'quic', 'https', 'h3', 'local', 'dhcp', 'fakeip',
+    'hosts', 'tailscale'
+  };
+  // A server addressed by a HOSTNAME (these transport types) needs a
+  // domain_resolver in 1.13 or the core FATALs "missing domain resolver".
+  static const _resolvableDnsTypes = {'udp', 'tcp', 'tls', 'quic', 'https', 'h3'};
+
+  static bool _isIpLiteral(String h) {
+    if (h.contains(':')) return true; // IPv6 literal
+    final p = h.split('.');
+    return p.length == 4 &&
+        p.every((x) {
+          final n = int.tryParse(x);
+          return n != null && n >= 0 && n <= 255;
+        });
+  }
+
   static List<dynamic> _migrateDnsServers(List? servers,
-      {Set<String> dropped = const {}, Map? fakeip}) {
+      {Set<String> dropped = const {}, Map? fakeip, Set<String>? droppedDns}) {
     final out = <dynamic>[];
     for (final s in servers ?? const []) {
       if (s is! Map) {
@@ -956,8 +1029,13 @@ class SingBoxConfig {
         out.add(n);
         continue;
       }
-      // Already new-format (has `type`) -> just scrub a dangling detour.
+      // Already new-format (has `type`) -> validate the type, scrub a dead detour.
       if (m['type'] != null || m['address'] == null) {
+        final t = m['type']?.toString();
+        if (t != null && !_validDnsTypes.contains(t)) {
+          if (m['tag'] != null) droppedDns?.add(m['tag'].toString());
+          continue;
+        }
         if (dropped.contains(m['detour']?.toString())) m.remove('detour');
         out.add(m);
         continue;
@@ -970,8 +1048,15 @@ class SingBoxConfig {
         n = {'type': 'dhcp'};
       } else if (addr.contains('://')) {
         final u = Uri.tryParse(addr);
-        // h3/https/tls/quic/tcp/udp each map to a sing-box DNS server type.
-        n = {'type': (u?.scheme ?? 'udp').toLowerCase(), 'server': u?.host ?? addr};
+        final type = (u?.scheme ?? 'udp').toLowerCase();
+        if (!_validDnsTypes.contains(type)) {
+          // Unknown DNS transport (rcode://, reject://, ...): no such server type
+          // in 1.13. Drop it + scrub refs — a lost ad-block resolver just means
+          // ads aren't DNS-blocked, NOT a rejected config.
+          if (m['tag'] != null) droppedDns?.add(m['tag'].toString());
+          continue;
+        }
+        n = {'type': type, 'server': u?.host ?? addr};
         if (u != null && u.hasPort) n['server_port'] = u.port;
       } else {
         // Bare IP/host -> plain UDP on :53.
@@ -990,6 +1075,45 @@ class SingBoxConfig {
       if (m['client_subnet'] != null) n['client_subnet'] = m['client_subnet'];
       out.add(n);
     }
+
+    // 1.13 needs every hostname-addressed DNS server to carry a domain_resolver.
+    // Find a direct IP/local server to bootstrap from (resolves the DoH hostname
+    // ONCE, pre-tunnel); inject a Yandex UDP:53 one if the config has only
+    // hostname resolvers; then point each hostname server at it.
+    final needsResolver = out.whereType<Map>().any((s) =>
+        _resolvableDnsTypes.contains(s['type']) &&
+        s['server'] is String &&
+        !_isIpLiteral(s['server'] as String) &&
+        s['domain_resolver'] == null);
+    if (needsResolver) {
+      String? boot;
+      for (final s in out.whereType<Map>()) {
+        final tag = s['tag']?.toString();
+        if (tag == null) continue;
+        if (s['type'] == 'local') {
+          boot = tag;
+          break;
+        }
+        if (s['detour'] == null &&
+            s['server'] is String &&
+            _isIpLiteral(s['server'] as String)) {
+          boot ??= tag;
+        }
+      }
+      if (boot == null) {
+        boot = 'dns-bootstrap';
+        out.insert(0, {'type': 'udp', 'server': '77.88.8.8', 'tag': boot});
+      }
+      for (final s in out.whereType<Map>()) {
+        if (_resolvableDnsTypes.contains(s['type']) &&
+            s['server'] is String &&
+            !_isIpLiteral(s['server'] as String) &&
+            s['domain_resolver'] == null &&
+            s['tag']?.toString() != boot) {
+          s['domain_resolver'] = {'server': boot};
+        }
+      }
+    }
     return out;
   }
 
@@ -997,7 +1121,7 @@ class SingBoxConfig {
   // route.default_domain_resolver — never one detoured through the proxy, which
   // would deadlock (can't resolve the server until the tunnel it needs is up).
   static String? _directResolverTag(List? servers) {
-    String? firstTag;
+    String? firstTag, directTag;
     for (final s in servers ?? const []) {
       if (s is! Map) continue;
       final tag = s['tag']?.toString();
@@ -1005,9 +1129,15 @@ class SingBoxConfig {
       firstTag ??= tag;
       final type = s['type']?.toString();
       final detour = s['detour']?.toString();
-      if (type == 'local' || detour == null || detour == 'direct') return tag;
+      final isDirect = type == 'local' || detour == null || detour == 'direct';
+      if (!isDirect) continue;
+      // Prefer a resolver that itself needs no DNS (local / IP literal) so the
+      // default resolver can't deadlock bootstrapping its own hostname.
+      final srv = s['server']?.toString();
+      if (type == 'local' || (srv != null && _isIpLiteral(srv))) return tag;
+      directTag ??= tag;
     }
-    return firstTag;
+    return directTag ?? firstTag;
   }
 
   /// Adds a system-wide TUN inbound (captures all OS traffic). Needs admin for

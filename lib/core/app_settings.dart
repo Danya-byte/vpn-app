@@ -44,7 +44,6 @@ class AppSettings {
     this.ech = false,
     this.autoAdapt = true, // detect ТСПУ blocking a live tunnel + auto-cycle anti-DPI
     this.connectOnLaunch = true, // resume the tunnel on launch if it was on at close
-    this.desyncDirect = true, // unblock throttled sites (YouTube/Discord) w/o a server
     this.killSwitchTun = false, // EXPERIMENTAL WFP fence for TUN — default OFF until battle-tested
     this.splitTunnelApps = const [], // process names routed DIRECT (bypass VPN) in TUN
     this.forceVpnApps = const [], // process names FORCED through the VPN (blocked apps)
@@ -68,7 +67,6 @@ class AppSettings {
   final bool ech; // Encrypted ClientHello (hides SNI; needs server support)
   final bool autoAdapt; // auto-cycle anti-DPI variants when ТСПУ blocks the tunnel
   final bool connectOnLaunch; // reconnect on startup if connected at last close
-  final bool desyncDirect; // no-server mode fragments throttled domains direct
   final bool killSwitchTun; // WFP fail-closed fence while in TUN mode
   final List<String> splitTunnelApps; // process names → direct (TUN split-tunnel)
   final List<String> forceVpnApps; // process names → pinned through the VPN
@@ -94,7 +92,6 @@ class AppSettings {
     bool? ech,
     bool? autoAdapt,
     bool? connectOnLaunch,
-    bool? desyncDirect,
     bool? killSwitchTun,
     List<String>? splitTunnelApps,
     List<String>? forceVpnApps,
@@ -119,7 +116,6 @@ class AppSettings {
         ech: ech ?? this.ech,
         autoAdapt: autoAdapt ?? this.autoAdapt,
         connectOnLaunch: connectOnLaunch ?? this.connectOnLaunch,
-        desyncDirect: desyncDirect ?? this.desyncDirect,
         killSwitchTun: killSwitchTun ?? this.killSwitchTun,
         splitTunnelApps: splitTunnelApps ?? this.splitTunnelApps,
         forceVpnApps: forceVpnApps ?? this.forceVpnApps,
@@ -172,7 +168,6 @@ class SettingsController extends Notifier<AppSettings> {
           ech: j['ech'] as bool? ?? false,
           autoAdapt: j['autoAdapt'] as bool? ?? true,
           connectOnLaunch: j['connectOnLaunch'] as bool? ?? true,
-          desyncDirect: j['desyncDirect'] as bool? ?? true,
           killSwitchTun: j['killSwitchTun'] as bool? ?? false,
           splitTunnelApps:
               (j['splitTunnelApps'] as List?)?.map((e) => '$e').toList() ??
@@ -213,7 +208,6 @@ class SettingsController extends Notifier<AppSettings> {
             'ech': state.ech,
             'autoAdapt': state.autoAdapt,
             'connectOnLaunch': state.connectOnLaunch,
-            'desyncDirect': state.desyncDirect,
             'killSwitchTun': state.killSwitchTun,
             'splitTunnelApps': state.splitTunnelApps,
             'forceVpnApps': state.forceVpnApps,
@@ -237,11 +231,6 @@ class SettingsController extends Notifier<AppSettings> {
 
   void setConnectOnLaunch(bool v) {
     state = state.copyWith(connectOnLaunch: v);
-    _save();
-  }
-
-  void setDesyncDirect(bool v) {
-    state = state.copyWith(desyncDirect: v);
     _save();
   }
 

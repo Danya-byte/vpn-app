@@ -38,6 +38,8 @@ enum CoreError {
   portInUse,
   wireguardHandshake,
   killSwitchFailed,
+  proxyFailed,
+  xrayMissing,
 }
 
 /// Sentinel so [CoreState.copyWith] can tell "leave as-is" from "clear".
@@ -52,6 +54,7 @@ class CoreState {
     this.logs = const [],
     this.fenceActive = false,
     this.whitelistMode = false,
+    this.tunnelDark = false,
   });
 
   final CoreStatus status;
@@ -64,6 +67,10 @@ class CoreState {
   // RU sites answer but no foreign exit is reachable. Non-fatal (we stay running,
   // fail-closed) — a Home banner explains it instead of churning the cascade.
   final bool whitelistMode;
+  // Tunnel is technically up (process alive, Clash API answers) but carries NO
+  // traffic right now — surfaced as "checking" so the UI never claims a solid
+  // "Connected" during the watchdog's dark window before it acts.
+  final bool tunnelDark;
 
   bool get isBusy =>
       status == CoreStatus.starting || status == CoreStatus.stopping;
@@ -77,6 +84,7 @@ class CoreState {
     List<String>? logs,
     bool? fenceActive,
     bool? whitelistMode,
+    bool? tunnelDark,
   }) {
     return CoreState(
       status: status ?? this.status,
@@ -86,6 +94,7 @@ class CoreState {
       logs: logs ?? this.logs,
       fenceActive: fenceActive ?? this.fenceActive,
       whitelistMode: whitelistMode ?? this.whitelistMode,
+      tunnelDark: tunnelDark ?? this.tunnelDark,
     );
   }
 }
@@ -110,6 +119,8 @@ class CoreController extends Notifier<CoreState> {
   Timer? _netDebounce;
   Timer? _hop;
   bool _hopping = false;
+  bool _inHealthCheck = false; // re-entrancy guard: a slow probe pass can outlast
+  // the 18s watchdog period, so a second tick must not double-hop.
   // Per-selector consecutive probe failures — a single failed /delay can be a
   // transient cold-handshake blip, so we require 2 in a row before hopping
   // (stops the "auto-hop churns every 20 s" the user saw).
@@ -298,7 +309,7 @@ class CoreController extends Notifier<CoreState> {
     'ENABLE_DEPRECATED_LEGACY_DNS_SERVERS': 'true',
     'ENABLE_DEPRECATED_GEOSITE': 'true',
     'ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS': 'true',
-    'ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEMS': 'true',
+    'ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM': 'true', // singular (core's name)
     'ENABLE_DEPRECATED_DNS_RULE_ACTIONS': 'true',
     'ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER': 'true',
     // fromConfig migrates legacy fakeip to the typed server; this is the
@@ -393,6 +404,25 @@ class CoreController extends Notifier<CoreState> {
     final tunMode = settings.vpnMode == VpnMode.tun;
     final xrayAvailable = File(CorePaths.xray()).existsSync();
     final awgAvailable = File(CorePaths.awg()).existsSync();
+    // An imported full-config that relies on XHTTP/splithttp needs the xray
+    // bridge. If xray.exe is missing (AV-quarantined / packaging slip), fromConfig
+    // would DROP those outbounds and silently route everything DIRECT (a fail-OPEN
+    // deanonymisation) — refuse with a clear error instead of running unprotected.
+    if (!xrayAvailable &&
+        node != null &&
+        node.isConfig &&
+        (((node.config!['outbounds'] as List?) ?? const [])
+            .whereType<Map>()
+            .any(XrayConfig.needsXray))) {
+      _autoReconnect = false;
+      await _failProxy();
+      state = state.copyWith(
+        status: CoreStatus.error,
+        error: CoreError.xrayMissing,
+        detail: null,
+      );
+      return;
+    }
     if (tunMode && !await NativeAdmin.isElevated()) {
       _autoReconnect = false;
       await _failProxy();
@@ -421,11 +451,10 @@ class CoreController extends Notifier<CoreState> {
             ech: settings.ech,
           )
         : node == null
-        // No server selected: run the local DPI-desync mode so throttled
-        // sites (YouTube/Discord) still work with zero config, no server.
-        ? (settings.desyncDirect
-              ? SingBoxConfig.desyncOnly()
-              : SingBoxConfig.m0Local())
+        // No server selected → a minimal local config. The "unblock without a
+        // server" desync mode was REMOVED: ТСПУ now reassembles TLS fragments,
+        // so it didn't actually unblock anything in RF (user-confirmed).
+        ? SingBoxConfig.m0Local()
         : node.isConfig
         ? SingBoxConfig.fromConfig(
             node.config!,
@@ -519,6 +548,7 @@ class CoreController extends Notifier<CoreState> {
       _recordPid('sing-box.exe', _proc!.pid);
     } catch (e) {
       _autoReconnect = false;
+      _killXray(); // sing-box spawn threw AFTER the xray bridges started → reap them
       await _failProxy();
       state = state.copyWith(
         status: CoreStatus.error,
@@ -537,7 +567,8 @@ class CoreController extends Notifier<CoreState> {
         .transform(decoder)
         .transform(const LineSplitter())
         .listen(_log);
-    unawaited(_proc!.exitCode.then(_onExit));
+    final spawned = _proc!;
+    unawaited(spawned.exitCode.then((code) => _onExit(code, spawned)));
 
     // Readiness probe: poll the Clash API until the core answers.
     final api = ref.read(clashApiProvider);
@@ -553,6 +584,7 @@ class CoreController extends Notifier<CoreState> {
       _autoReconnect = false;
       _proc?.kill();
       _proc = null;
+      _killXray(); // identity-guarded _onExit won't reap once _proc is nulled
       await _failProxy();
       state = state.copyWith(
         status: CoreStatus.error,
@@ -568,6 +600,7 @@ class CoreController extends Notifier<CoreState> {
     if (!_autoReconnect) {
       _proc?.kill();
       _proc = null;
+      _killXray(); // identity-guarded _onExit early-returns once _proc is nulled
       await _restoreProxy();
       state = state.copyWith(
         status: CoreStatus.stopped,
@@ -582,9 +615,26 @@ class CoreController extends Notifier<CoreState> {
     // BEFORE the await so a racing stop()/death sees a consistent _proxyActive.
     if (!tunMode) {
       _proxyActive = true;
-      await SystemProxy.set(
+      final proxyOk = await SystemProxy.set(
         '${SingBoxConfig.mixedListen}:${SingBoxConfig.mixedPort}',
       );
+      if (!proxyOk) {
+        // The system proxy didn't actually apply (e.g. a denied registry write):
+        // in proxy mode the user would be UNPROTECTED (apps go direct) while the
+        // UI claims "connected". Fail CLOSED — tear the core down + surface it.
+        _proxyActive = false;
+        _autoReconnect = false;
+        _proc?.kill();
+        _proc = null;
+        _killXray();
+        await _failProxy();
+        state = state.copyWith(
+          status: CoreStatus.error,
+          error: CoreError.proxyFailed,
+          detail: null,
+        );
+        return;
+      }
     }
 
     // Re-check intent AFTER the proxy-set await: a user Stop — or an unexpected
@@ -594,6 +644,7 @@ class CoreController extends Notifier<CoreState> {
     if (!_autoReconnect) {
       _proc?.kill();
       _proc = null;
+      _killXray(); // identity-guarded _onExit early-returns once _proc is nulled
       await _restoreProxy();
       state = state.copyWith(
         status: CoreStatus.stopped,
@@ -604,12 +655,65 @@ class CoreController extends Notifier<CoreState> {
     }
     if (_proc == null) return; // died during start → _onExit already handled it
 
+    // TUN kill-switch: engage the WFP fence BEFORE declaring "running", so there
+    // is never a green/connected moment without the fence up (closes the
+    // first-connect leak window). Re-engaged each connect (the tunnel LUID changes
+    // per session). Fail-safe: if it can't install, refuse to run unprotected.
+    _fenceActive = false;
+    if (tunMode && settings.killSwitchTun) {
+      // Permit EVERY core that makes its OWN outbound — sing-box AND the xray
+      // bridge — or the fence blacks out XHTTP / Reality-over-XHTTP, which dial
+      // out as the xray process (H1). One path per binary; the WFP app-id
+      // condition matches by image, so it covers all xray bridge processes.
+      final paths = fencePermitPaths(exe, CorePaths.xray(),
+          xrayAvailable: xrayAvailable,
+          awgExe: CorePaths.awg(),
+          awgAvailable: awgAvailable);
+      // tun0 can lag the core's start, so the native engage may miss the LUID on
+      // the first try. RETRY here (off the UI thread — each await yields), instead
+      // of Sleep-blocking the native platform thread, before giving up.
+      var ok = false;
+      for (var i = 0; i < 10 && !ok; i++) {
+        if (_proc == null || !_autoReconnect) return; // died/stopped mid-retry
+        ok = await NativeAdmin.fenceEngage(paths);
+        if (!ok) await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+      _fenceActive = ok;
+      if (!ok) {
+        // BLOCK-on-fail: the user EXPLICITLY enabled the kill-switch. Running TUN
+        // unprotected would be a silent fail-OPEN — refuse. _proc?.kill() routes
+        // through the identity-guarded _onExit (the _fenceFailed flag → a clear
+        // error); clear _restarting so restart() can't relaunch into the failure.
+        _log('kill-switch: WFP fence could NOT install — refusing to run unprotected');
+        _fenceFailed = true;
+        _autoReconnect = false;
+        _restarting = false;
+        // Clear any stale green fence-state from a prior session so the error
+        // screen doesn't show a redundant "unblock" prompt (the fence is NOT up).
+        if (state.fenceActive) state = state.copyWith(fenceActive: false);
+        _proc?.kill();
+        return;
+      }
+      _log('kill-switch: TUN fence engaged (fail-closed)');
+    }
+    // Reflect the real fence state even if we bail below: if the core died during
+    // the engage await, the WFP fence is physically up, so the Home chip mustn't
+    // flicker off through the reconnect window.
+    if (_fenceActive && state.fenceActive != true) {
+      state = state.copyWith(fenceActive: true);
+    }
+    // The core may have died (or a Stop landed) DURING the fence-engage await —
+    // _onExit already set the right state; don't overwrite it with "running".
+    if (_proc == null || !_autoReconnect) return;
+
     state = state.copyWith(
       status: CoreStatus.running,
       version: version,
       error: null,
       detail: null,
       whitelistMode: false, // fresh (re)connect — re-detect from clean
+      tunnelDark: false,
+      fenceActive: _fenceActive,
     );
     _whitelistMode = false;
     _exitRetries = 0;
@@ -624,39 +728,9 @@ class CoreController extends Notifier<CoreState> {
     // setup churn (the "reconnects every few seconds right after connect" storm).
     _settleUntil = DateTime.now().add(const Duration(seconds: 12));
     // Mark "was connected" for resume-on-launch — but ONLY for a real server.
-    // A no-server mode (desync / m0Local) has nothing to resume TO, so flagging
-    // it would auto-"reconnect" into a confusing "no VPN" state next launch.
+    // A no-server mode (m0Local) has nothing to resume TO, so flagging it would
+    // auto-"reconnect" into a confusing "no VPN" state next launch.
     if (node != null || useAuto) _writeConnectedFlag();
-    // TUN kill-switch: install/refresh the WFP fence so a later core death fails
-    // CLOSED (no plaintext leak onto the physical NIC). Re-engaged each connect
-    // because the tunnel interface LUID changes per session. Fail-safe: if it
-    // can't install, we say so in the log and carry on (no fence, not a crash).
-    if (tunMode && settings.killSwitchTun) {
-      // Permit EVERY core that makes its OWN outbound — sing-box AND the xray
-      // bridge — or the fence blacks out XHTTP / Reality-over-XHTTP, which dial
-      // out as the xray process (H1). One path per binary; the WFP app-id
-      // condition matches by image, so it covers all xray bridge processes.
-      final ok = await NativeAdmin.fenceEngage(fencePermitPaths(
-          exe, CorePaths.xray(),
-          xrayAvailable: xrayAvailable,
-          awgExe: CorePaths.awg(),
-          awgAvailable: awgAvailable));
-      _fenceActive = ok;
-      state = state.copyWith(fenceActive: ok);
-      if (!ok) {
-        // BLOCK-on-fail: the user EXPLICITLY enabled the kill-switch. Running TUN
-        // unprotected would be a silent fail-OPEN — refuse. Tear the core down via
-        // _onExit (the _fenceFailed flag routes it to a clear error); clear
-        // _restarting so restart() can't relaunch into the same failure.
-        _log('kill-switch: WFP fence could NOT install — refusing to run unprotected');
-        _fenceFailed = true;
-        _autoReconnect = false;
-        _restarting = false;
-        _proc?.kill();
-        return;
-      }
-      _log('kill-switch: TUN fence engaged (fail-closed)');
-    }
     _startHop();
     _startWatchdog();
   }
@@ -948,6 +1022,15 @@ class CoreController extends Notifier<CoreState> {
           onTimeout: () => -1,
         );
       }
+      // Reap the OLD xray bridges deterministically — don't rely on the old
+      // _onExit (a >5s teardown delays it past start(), and the identity guard
+      // now ignores a stale exit). Idempotent if _onExit already cleared them.
+      _killXray();
+      // If the old core didn't exit within the timeout it's still holding ports
+      // 2080/9090; null our handle so start()'s `_proc == null` orphan-sweep frees
+      // them — else the new core hits `bind: address already in use` → a spurious,
+      // terminal portInUse. The identity-guarded _onExit ignores the late exit.
+      _proc = null;
       // _onExit saw _restarting and left the proxy pointed at the (now refused)
       // local port. Bring the new core up — unless a user stop() cancelled us.
       if (_restarting) {
@@ -960,9 +1043,16 @@ class CoreController extends Notifier<CoreState> {
     }
   }
 
-  void _onExit(int code) {
+  Future<void> _onExit(int code, [Process? proc]) async {
+    // Identity guard: a SLOW old sing-box whose exitCode lands AFTER restart()'s
+    // 5s timeout fired and start() already spawned a FRESH _proc + xray bridges
+    // must NOT clobber the new session (null its _proc, kill its bridges). Ignore
+    // a stale exit — restart() reaps the old bridges itself before start().
+    if (proc != null && !identical(_proc, proc)) return;
     _proc = null;
     _hop?.cancel();
+    _watchdog?.cancel(); // stop probing a dead core (re-armed by the next start())
+    _netDebounce?.cancel();
     _killXray();
     // The fail-closed contract lives in the unit-tested [decideExit] — this just
     // executes the outcome. exitRetries is passed AS IF this death is tallied
@@ -983,14 +1073,14 @@ class CoreController extends Notifier<CoreState> {
         // The swap owns the relaunch; the proxy stays at our port (fail CLOSED).
         return;
       case ExitOutcome.stopRestore:
-        _finishExit(d, CoreStatus.stopped); // deliberate stop — keep any detail
+        await _finishExit(d, CoreStatus.stopped); // deliberate stop — keep any detail
         return;
       case ExitOutcome.portInUse:
         // Not transient (another copy/orphan holds the port) — looping spams
         // FATALs. Stop, restore connectivity, tell the user.
         _portConflict = false;
         _autoReconnect = false;
-        _finishExit(d, CoreStatus.error,
+        await _finishExit(d, CoreStatus.error,
             error: CoreError.portInUse, detail: null);
         return;
       case ExitOutcome.wireguardDead:
@@ -1000,19 +1090,19 @@ class CoreController extends Notifier<CoreState> {
         _wgDead = false;
         _wgHandshakeFails = 0;
         _autoReconnect = false;
-        _finishExit(d, CoreStatus.error,
+        await _finishExit(d, CoreStatus.error,
             error: CoreError.wireguardHandshake, detail: null);
         return;
       case ExitOutcome.gaveUp:
         _autoReconnect = false;
-        _finishExit(d, CoreStatus.error,
+        await _finishExit(d, CoreStatus.error,
             error: CoreError.gaveUp, detail: null);
         return;
       case ExitOutcome.gaveUpFenced:
         // Kill-switch ON: give up but STAY fail-CLOSED (fence + proxy kept). The
         // unblock button (status==error && fenceActive) lets the user disconnect.
         _autoReconnect = false;
-        _finishExit(d, CoreStatus.error,
+        await _finishExit(d, CoreStatus.error,
             error: CoreError.gaveUp, detail: null);
         return;
       case ExitOutcome.killSwitchFailed:
@@ -1021,7 +1111,7 @@ class CoreController extends Notifier<CoreState> {
         // error so they can fix it (run as admin / turn the kill-switch off).
         _fenceFailed = false;
         _autoReconnect = false;
-        _finishExit(d, CoreStatus.error,
+        await _finishExit(d, CoreStatus.error,
             error: CoreError.killSwitchFailed, detail: null);
         return;
       case ExitOutcome.reconnect:
@@ -1050,14 +1140,16 @@ class CoreController extends Notifier<CoreState> {
   // pointer, optionally restore the user's real proxy + drop the fence (per the
   // [decideExit] flags), and clear the run markers. [error]/[detail] default to
   // "leave as-is" (a clean stop keeps them) — terminals pass explicit values.
-  void _finishExit(ExitDecision d, CoreStatus status,
-      {Object? error = _unset, Object? detail = _unset}) {
+  Future<void> _finishExit(ExitDecision d, CoreStatus status,
+      {Object? error = _unset, Object? detail = _unset}) async {
     // Only drop our proxy pointer when we actually restore the user's — a
     // fail-CLOSED give-up (gaveUpFenced) keeps the proxy at our dead local port
-    // so proxy-aware apps stay blocked, not leaking direct.
+    // so proxy-aware apps stay blocked, not leaking direct. AWAIT the clear so a
+    // user who closes the app right after a give-up isn't left on a dead local
+    // proxy (the native OnDestroy/next-launch restore is the backstop).
     if (d.restoreProxy) {
       _proxyActive = false;
-      SystemProxy.clear();
+      await SystemProxy.clear();
     }
     _clearPids();
     _clearConnectedFlag();
@@ -1238,7 +1330,10 @@ class CoreController extends Notifier<CoreState> {
   /// bounded, so a genuinely down/blocked node can't loop forever.
   void _startWatchdog() {
     _watchdog?.cancel();
-    if (!ref.read(settingsProvider).autoAdapt) return;
+    // Always run while connected: even with auto-adapt OFF the watchdog must keep
+    // an HONEST liveness signal (tunnelDark + whitelist banner) so the UI never
+    // shows green "Connected" on a silently-dead tunnel. Auto-adapt gates only the
+    // REMEDIATION (cascade/hop/escalate), not detection (see _checkHealthBody).
     _watchdog = Timer.periodic(
       const Duration(seconds: 18),
       (_) => _checkHealth(),
@@ -1246,15 +1341,25 @@ class CoreController extends Notifier<CoreState> {
   }
 
   Future<void> _checkHealth() async {
-    if (!ref.read(settingsProvider).autoAdapt) {
-      _watchdog?.cancel(); // turned off mid-session
-      return;
+    if (!state.isOn || _adapting || _restarting || _inHealthCheck) return;
+    _inHealthCheck = true;
+    try {
+      await _checkHealthBody();
+    } finally {
+      _inHealthCheck = false;
     }
-    if (!state.isOn || _adapting || _restarting) return;
+  }
+
+  Future<void> _checkHealthBody() async {
+    // Detection (tunnelDark / whitelist banner) ALWAYS runs; auto-adapt gates only
+    // the remediation (episode-clear / freeze-hop / degradation-hop / cascade).
+    final adapt = ref.read(settingsProvider).autoAdapt;
     if (await _tunnelHealthy()) {
       _healthFails = 0;
       _healthyStreak++;
       _clearWhitelistMode(); // real traffic flows ⇒ not in whitelist collapse
+      _setTunnelDark(false);
+      if (!adapt) return; // detection done; remediation below is auto-adapt's job
       // Clear the cascade's tried-set only on SUSTAINED recovery (#6) — the rule
       // lives in the unit-tested [watchdogShouldClearEpisode], not inline here.
       if (watchdogShouldClearEpisode(
@@ -1271,8 +1376,18 @@ class CoreController extends Notifier<CoreState> {
     }
     _healthFails++;
     _healthyStreak = 0; // a dark tick breaks the recovery streak
+    _setTunnelDark(true); // honest UI even with auto-adapt OFF
     if (_healthFails < 3) return; // ~54s of no traffic before acting
     _healthFails = 0;
+    if (!adapt) {
+      // Auto-adapt OFF → detect-only: still surface the whitelist banner (network
+      // collapsed to RU-only) so the dark state is explained, but DON'T hop /
+      // escalate / restart — that's auto-adapt's job.
+      if (await _directNetworkUp() && !await _foreignNetworkUp()) {
+        _latchWhitelistMode();
+      }
+      return;
+    }
     // Decide the dark-path action through the unit-tested orchestrator — keeping
     // the safety-critical ORDER (network gate BEFORE the cascade; IP-block & fp-
     // no-op stops BEFORE an fp-restart) in one place a test locks. We only
@@ -1294,18 +1409,8 @@ class CoreController extends Notifier<CoreState> {
       case DarkAction.whitelistMode:
         // RU answers but every foreign IP is dark → mobile network fell back to
         // the state allowlist. Cascade/fp cycling is physically futile; stop and
-        // inform (don't disconnect — we stay fail-closed). Latched so the banner
-        // + log fire once per collapse, cleared when real traffic flows again.
-        if (!_whitelistMode) {
-          _whitelistMode = true;
-          state = state.copyWith(whitelistMode: true);
-          _log(
-            'auto-adapt: network collapsed to the state WHITELIST — RU sites '
-            'answer but every foreign IP is dropped (mobile shutdown). No '
-            'foreign exit is reachable; pausing transport/fp cycling. Use Wi-Fi '
-            'or a domestic relay.',
-          );
-        }
+        // inform (don't disconnect — we stay fail-closed).
+        _latchWhitelistMode();
         return;
       case DarkAction.stopIpBlock:
         _log(
@@ -1436,20 +1541,28 @@ class CoreController extends Notifier<CoreState> {
   // + "arrived" threshold come from the ТСПУ-fact feed (②), defaulting baked.
   Future<bool> _bulkThroughOk() async {
     final facts = CensorshipFacts.active;
+    const stallWindow = Duration(seconds: 6); // no new bytes this long = stalled
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 6)
       ..findProxy = (_) =>
           'PROXY ${SingBoxConfig.mixedListen}:${SingBoxConfig.mixedPort}';
+    var got = 0;
     try {
       final req = await client.getUrl(Uri.parse(facts.freezeProbeUrl));
       final resp = await req.close().timeout(const Duration(seconds: 9));
-      var got = 0;
-      await for (final chunk in resp.timeout(const Duration(seconds: 9))) {
+      // Per-EVENT inactivity timeout: a steadily-arriving (even slow) stream keeps
+      // resetting it, so a slow-but-working link is NOT mistaken for a freeze;
+      // only a genuine STALL (no bytes for stallWindow) trips it.
+      await for (final chunk in resp.timeout(stallWindow)) {
         got += chunk.length;
       }
       return got >= facts.freezeThresholdKb * 1024; // got the bulk ⇒ no freeze
     } on TimeoutException {
-      return false; // started but stalled mid-stream ⇒ freeze signature
+      // Stalled. The 16KB-freeze signature is specifically "flowed PAST ~16KB then
+      // froze" — so only call it a freeze if we actually crossed that wall. A stall
+      // with little data is more likely a transient blip / slow start, so treat it
+      // as inconclusive (don't burn a transport hop on a slow link).
+      return got < 16 * 1024;
     } catch (_) {
       return true; // inconclusive (target/network) — don't false-flag a freeze
     } finally {
@@ -1538,6 +1651,29 @@ class CoreController extends Notifier<CoreState> {
     if (!_whitelistMode) return;
     _whitelistMode = false;
     state = state.copyWith(whitelistMode: false);
+  }
+
+  // Latch the "network collapsed to the state WHITELIST" banner (RU answers but
+  // every foreign IP is dark — a mobile shutdown). Once per collapse; cleared when
+  // real traffic flows again. Never disconnects — we stay fail-closed. Called from
+  // the dark-path AND the auto-adapt-OFF detect-only branch.
+  void _latchWhitelistMode() {
+    if (_whitelistMode) return;
+    _whitelistMode = true;
+    state = state.copyWith(whitelistMode: true);
+    _log(
+      'network collapsed to the state WHITELIST — RU sites answer but every '
+      'foreign IP is dropped (mobile shutdown). No foreign exit is reachable; '
+      'pausing transport/fp cycling. Use Wi-Fi or a domestic relay.',
+    );
+  }
+
+  // The tunnel is dark (no traffic) while still "running" — drive the honest
+  // "checking" status so the UI doesn't show a solid green "Connected" + a stale
+  // exit-IP during the watchdog's dark window. Transition-guarded (no churn).
+  void _setTunnelDark(bool v) {
+    if (state.tunnelDark == v) return;
+    state = state.copyWith(tunnelDark: v);
   }
 
   // The active leaf's refined anti-DPI family (for the fp-no-op decision) —

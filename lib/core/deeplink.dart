@@ -2,8 +2,9 @@ import 'dart:io';
 
 /// Set from `main(args)` when the app is COLD-launched with a deeplink / file
 /// (e.g. clicking a `vpn://…` link, or "Open with" on a config). RootScaffold
-/// consumes it on the first frame, then clears it. (Warm-start forwarding — a
-/// second launch while already running — needs native IPC and is a follow-up.)
+/// consumes it on the first frame, then clears it. Warm-start forwarding (a
+/// second launch while already running) IS implemented natively via WM_COPYDATA
+/// (main.cpp → flutter_window → the `deeplink` method channel → RootScaffold).
 String? pendingLaunchImport;
 
 final _bareLink = RegExp(

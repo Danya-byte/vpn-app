@@ -22,7 +22,9 @@ permissions:
   contents: write # create the Release + upload assets
 
 env:
-  FLUTTER_VERSION: '3.24.5' # TODO: pin to the exact version you build with
+  # MUST ship Dart >= 3.12 — pubspec is `sdk: ^3.12.0`, so an older Flutter
+  # (e.g. 3.24.x = Dart 3.5) fails `flutter pub get` and the release never builds.
+  FLUTTER_VERSION: '3.44.0'
 
 jobs:
   windows:
@@ -48,6 +50,12 @@ jobs:
       - name: Fetch pinned cores
         shell: pwsh
         run: ./tool/fetch-cores.ps1 -IncludeXray
+
+      # Gate the release on a clean analyze + the full suite (incl. the REAL
+      # `sing-box check` against the just-fetched core). A broken build must
+      # never reach a published release.
+      - run: flutter analyze
+      - run: flutter test
 
       # package.ps1: build (version/commit-stamped) → bundle cores + license/notices
       # → zip + .sha256 → installer.

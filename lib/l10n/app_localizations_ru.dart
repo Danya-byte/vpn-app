@@ -33,6 +33,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get statusConnected => 'Подключено';
 
   @override
+  String get statusChecking => 'Проверяю соединение…';
+
+  @override
   String get statusConnecting => 'Подключение…';
 
   @override
@@ -372,6 +375,13 @@ class AppLocalizationsRu extends AppLocalizations {
   String get importConfigProfile => 'конфиг sing-box';
 
   @override
+  String get importExit => 'Маршрут по умолчанию';
+
+  @override
+  String get importRoutesDirect =>
+      'Этот конфиг пускает ВЕСЬ трафик напрямую — без защиты VPN';
+
+  @override
   String get importConnectAction => 'Подключиться';
 
   @override
@@ -385,6 +395,10 @@ class AppLocalizationsRu extends AppLocalizations {
   String importFetchBody(String host) {
     return '$host получит ваш IP-адрес, и приложение загрузит предоставленный им список серверов. Продолжайте, только если доверяете ссылке.';
   }
+
+  @override
+  String get importFetchInsecure =>
+      'Это http:// (незашифрованная) ссылка — список серверов могут подменить по пути. Лучше используйте https://.';
 
   @override
   String get importContinue => 'Продолжить';
@@ -426,6 +440,14 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get errKillSwitchFailed =>
       'Kill-switch включён, но firewall-фенс не удалось установить — не подключаюсь без защиты. Запустите приложение от администратора или выключите kill-switch в настройках.';
+
+  @override
+  String get errProxyFailed =>
+      'Не удалось задать системный прокси — не подключаюсь (приложения пошли бы напрямую, без защиты). Проверьте права на прокси/реестр Windows.';
+
+  @override
+  String get errXrayMissing =>
+      'Этому профилю нужен мост xray (xray.exe), которого нет в установке. Переустановите приложение или восстановите xray.exe.';
 
   @override
   String updateAvailable(String version) {
@@ -516,13 +538,6 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get muxDesc =>
       'Много потоков в одном TLS-соединении — меньше соединений, которые DPI может отследить. Пропускается для Vision/QUIC.';
-
-  @override
-  String get echTitle => 'ECH — шифровать SNI';
-
-  @override
-  String get echDesc =>
-      'Шифрует ClientHello целиком, SNI полностью скрыт. Нужна поддержка ECH на сервере.';
 
   @override
   String subDaysLeft(int days) {
@@ -619,17 +634,6 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get speedTestUploading => 'Отдача…';
-
-  @override
-  String get desyncTitle => 'Разблокировка без сервера';
-
-  @override
-  String get desyncDesc =>
-      'Когда сервер НЕ выбран, «Подключить» запускает локальный DPI-десинк: разблокирует ЗАДУШЕННЫЕ сайты (YouTube, Discord) дроблением TLS-рукопожатия — без конфига и сервера. Заблокированные по IP (Instagram, X) всё равно требуют сервер.';
-
-  @override
-  String get desyncHint =>
-      'Без сервера — нажми «Подключить», чтобы локально разблокировать YouTube/Discord';
 
   @override
   String get killSwitchActive => 'Kill-switch вкл';

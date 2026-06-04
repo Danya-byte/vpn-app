@@ -53,7 +53,13 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
     // Tappable except mid-teardown: while "Connecting…" a tap CANCELS, and in the
     // error state a tap RETRIES (toggle() routes both) — so the user is never
     // stuck on a hung connect or a port-busy error with no way out.
-    final enabled = status != CoreStatus.stopping;
+    // BUT disabled when stopped with an EMPTY store: connecting with no server
+    // brings up a do-nothing local config that shows a misleading green
+    // "Connected" while protecting nothing — the empty-state CTA guides import.
+    final hasTarget =
+        ref.watch(profilesProvider.select((s) => s.nodes.isNotEmpty));
+    final enabled = status != CoreStatus.stopping &&
+        (status != CoreStatus.stopped || hasTarget);
 
     // Distinct ring per state so "Connecting" / "Disconnecting" don't read as
     // idle (they previously fell through to the default white branch).

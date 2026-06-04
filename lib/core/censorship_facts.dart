@@ -105,7 +105,13 @@ class CensorshipFacts {
     }
     if (j is! Map) return null;
     final version = (j['version'] as num?)?.toInt() ?? 0;
-    if (version <= haveVersion) return null; // not newer → ignore
+    // Reject a stale/replayed feed AND an implausibly-large version: a poison
+    // `version: 2147483647` would otherwise permanently brick the channel (no
+    // future feed could beat it) and persist to the cache. The ceiling is high
+    // enough to admit a date (YYYYMMDD) or epoch-millis versioning scheme (~year
+    // 2100) yet still bounds an int32/int64-max poison. Self-healing: a
+    // previously-cached poison is refused on load → baked defaults stand.
+    if (version <= haveVersion || version > 4102444800000) return null;
 
     // desyncDomains: keep only plausible hostnames (suffix-match safe), dedupe,
     // cap size. Empty/garbage → fall back to the baked list.
@@ -121,20 +127,43 @@ class CensorshipFacts {
 
     // freezeProbeUrl: HTTPS only (it's dialed through the proxy; http / non-URL
     // is rejected → keep the default).
+    // freezeProbeUrl: HTTPS only (it's dialed through the proxy; http / non-URL
+    // is rejected → keep the default).
     final rawUrl = j['freezeProbeUrl']?.toString() ?? '';
-    final url = _isHttpsUrl(rawUrl) ? rawUrl : defaults.freezeProbeUrl;
+    var url = _isHttpsUrl(rawUrl) ? rawUrl : defaults.freezeProbeUrl;
 
-    // threshold: clamp to a sane KB window.
-    final rawKb =
-        (j['freezeThresholdKb'] as num?)?.toInt() ?? defaults.freezeThresholdKb;
+    // threshold: clamp to a sane KB window AND to what the probe can actually
+    // deliver — a threshold above the probe's `bytes=` payload makes the bulk-
+    // probe NEVER satisfiable → a permanent false-freeze → endless transport hops.
+    var kb = ((j['freezeThresholdKb'] as num?)?.toInt() ??
+            defaults.freezeThresholdKb)
+        .clamp(8, 256);
+    final bytes =
+        int.tryParse(Uri.tryParse(url)?.queryParameters['bytes'] ?? '');
+    if (bytes != null && bytes > 0) {
+      final payloadFloorKb = (bytes * 9 ~/ 10) ~/ 1024; // ~90% of payload, in KB
+      if (payloadFloorKb < 8) {
+        // The probe is too small to ever satisfy even the 8KB floor → unusable.
+        // Fall back to the baked probe+threshold (a known-satisfiable pair) rather
+        // than ship an unsatisfiable freeze test that hops transports forever.
+        url = defaults.freezeProbeUrl;
+        kb = defaults.freezeThresholdKb;
+      } else if (kb > payloadFloorKb) {
+        kb = payloadFloorKb; // never demand more than the probe can deliver
+      }
+    }
 
-    final updated = (j['updated']?.toString() ?? '').trim();
+    // `updated` is display-only — strip control chars THEN cap length so a hostile
+    // feed can't render a multi-KB blob (or newlines) in the version tile.
+    final raw =
+        (j['updated']?.toString() ?? '').replaceAll(RegExp(r'[\x00-\x1f]'), '').trim();
+    final updated = raw.isEmpty ? 'unknown' : (raw.length > 40 ? raw.substring(0, 40) : raw);
     return CensorshipFacts(
       version: version,
-      updated: updated.isEmpty ? 'unknown' : updated,
+      updated: updated,
       desyncDomains: domains.isEmpty ? defaults.desyncDomains : domains,
       freezeProbeUrl: url,
-      freezeThresholdKb: rawKb.clamp(8, 256),
+      freezeThresholdKb: kb,
     );
   }
 

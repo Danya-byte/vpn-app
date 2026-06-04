@@ -207,9 +207,9 @@ class _DragOverlay extends StatelessWidget {
         type: MaterialType.transparency,
         child: ClipRect(
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
             child: Container(
-              color: Colors.black.withValues(alpha: 0.26),
+              color: Colors.black.withValues(alpha: 0.10),
               alignment: Alignment.center,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -279,7 +279,7 @@ class _GlassNavState extends State<_GlassNav> {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(32),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
           child: Container(
             height: 64,
             decoration: BoxDecoration(
@@ -288,11 +288,11 @@ class _GlassNavState extends State<_GlassNav> {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  Colors.white.withValues(alpha: 0.13),
-                  Colors.white.withValues(alpha: 0.05),
+                  Colors.white.withValues(alpha: 0.06),
+                  Colors.white.withValues(alpha: 0.015),
                 ],
               ),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withValues(alpha: 0.28),
