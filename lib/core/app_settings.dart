@@ -6,7 +6,9 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core_paths.dart';
+import 'desync_config.dart';
 import 'route_mode.dart';
+import 'route_rule.dart';
 
 /// How the tunnel is wired into the OS. User-facing labels/descriptions live in
 /// l10n (vpnModeProxy/vpnModeTun/...), never as hardcoded strings here.
@@ -33,6 +35,15 @@ const tlsFingerprints = <String>[
 const logLevels = <String>['warn', 'info', 'debug'];
 const defaultLogLevel = kDebugMode ? 'info' : 'warn';
 
+/// sing-box TUN network stack. gVisor (default) is the most compatible on
+/// Windows; `system` uses the OS stack (lower overhead, less isolation);
+/// `mixed` = system TCP + gVisor UDP. Changing off gVisor is advanced.
+const tunStacks = <String>['gvisor', 'system', 'mixed'];
+
+/// Multiplex carrier protocol (only used when [AppSettings.mux] is on). h2mux is
+/// the broad default; smux/yamux suit some servers.
+const muxProtocols = <String>['h2mux', 'smux', 'yamux'];
+
 class AppSettings {
   const AppSettings({
     this.mode = RouteMode.smart,
@@ -41,10 +52,13 @@ class AppSettings {
     this.autoFailover = true, // RF default: auto-pick the fastest working node (no-op with <2 nodes)
     this.tlsFingerprint = 'chrome',
     this.mux = false,
-    this.ech = false,
     this.autoAdapt = true, // detect ТСПУ blocking a live tunnel + auto-cycle anti-DPI
+    this.maxResistance = false, // "hard network" (mobile operator): force fragmentation + active survivor-cascade
     this.connectOnLaunch = true, // resume the tunnel on launch if it was on at close
     this.killSwitchTun = false, // EXPERIMENTAL WFP fence for TUN — default OFF until battle-tested
+    this.fakeIpTun = false, // EXPERIMENTAL FakeIP DNS in TUN (faster first-load) — default OFF until on-device tested
+    this.winwsDesync = false, // server-less WinDivert TLS-DPI bypass (winws.exe) — needs admin + the binary
+    this.desyncStrategy = DesyncConfig.defaultStrategy, // winws desync method preset
     this.splitTunnelApps = const [], // process names routed DIRECT (bypass VPN) in TUN
     this.forceVpnApps = const [], // process names FORCED through the VPN (blocked apps)
     this.registerLinks = false, // OS handlers for vpn:// / sing-box:// / .json open-with
@@ -55,6 +69,20 @@ class AppSettings {
     this.hy2DownMbps = 0, // Hysteria2 Brutal download cap, Mbps (0 = auto)
     this.customDns = '', // custom DoH resolver; '' = the RF-safe default (Yandex)
     this.logLevel = defaultLogLevel,
+    this.insecureAccepted = const {}, // node tags the user OK'd the MITM risk for
+    this.customRules = const [], // user routing rules (domain/ip → proxy/direct/block)
+    this.webdavUrl = '', // WebDAV file URL for profile sync ('' = off)
+    this.webdavUser = '',
+    this.webdavPass = '',
+    // Perf / advanced transport knobs (all conservative defaults = current behaviour).
+    this.tunStack = 'gvisor', // sing-box TUN stack (gvisor/system/mixed)
+    this.muxProtocol = 'h2mux', // multiplex carrier when mux is on
+    this.muxStreams = 8, // multiplex max concurrent streams (1..256)
+    this.muxPadding = false, // multiplex padding (obfuscate stream sizes)
+    this.ecsSubnet = '', // EDNS Client Subnet for DNS ('' = off)
+    this.ech = false, // Encrypted ClientHello on non-Reality TLS (needs server support)
+    this.tcpFastOpen = false, // TCP Fast Open on dial — advanced (breaks anytls / some RF paths)
+    this.mptcp = false, // Multipath TCP on dial — advanced
     this.localeCode,
   });
 
@@ -64,10 +92,20 @@ class AppSettings {
   final bool autoFailover; // urltest over all nodes, pick fastest + fail over
   final String tlsFingerprint; // uTLS pool: chrome/firefox/safari/edge/ios/random
   final bool mux; // multiplex (h2mux) — one TLS conn carries many streams
-  final bool ech; // Encrypted ClientHello (hides SNI; needs server support)
   final bool autoAdapt; // auto-cycle anti-DPI variants when ТСПУ blocks the tunnel
+  // "Hard network" mode (mobile operators block far harder than Wi-Fi): forces
+  // TLS-fragment anti-DPI ON + the active survivor-preferring cascade ON,
+  // regardless of the individual toggles. The hook the heavier resistance layers
+  // (packet desync / domestic relay) will hang off once chosen by the diagnostic.
+  final bool maxResistance;
   final bool connectOnLaunch; // reconnect on startup if connected at last close
   final bool killSwitchTun; // WFP fail-closed fence while in TUN mode
+  final bool fakeIpTun; // FakeIP DNS in TUN — instant synthetic answers (faster first-load)
+  // Server-less DPI bypass: run the zapret WinDivert sidecar (winws.exe) to
+  // desync the outbound TLS ClientHello so ТСПУ can't match the SNI. Defeats
+  // TLS-DPI where the IP is reachable; needs admin (kernel driver) + the binary.
+  final bool winwsDesync;
+  final String desyncStrategy; // winws method preset (DesyncConfig.strategies key)
   final List<String> splitTunnelApps; // process names → direct (TUN split-tunnel)
   final List<String> forceVpnApps; // process names → pinned through the VPN
   final bool registerLinks; // vpn:// / sing-box:// / .json OS handlers registered
@@ -78,9 +116,57 @@ class AppSettings {
   final int hy2DownMbps; // Hysteria2 Brutal download cap, Mbps (0 = auto)
   final String customDns; // custom DoH resolver ('' = RF-safe default)
   final String logLevel; // sing-box log verbosity (warn/info/debug)
+  // Node tags whose insecure (cert-validation-off) MITM risk the user has
+  // already accepted, so the H5 consent is asked ONCE per node — not every
+  // connect. Cleared per-tag never (a node stays trusted once OK'd).
+  final Set<String> insecureAccepted;
+  // User routing rules (domain/IP → proxy/direct/block) — competitor parity, win
+  // over the geo/smart rules. Empty = pure smart/global behaviour as before.
+  final List<RouteRule> customRules;
+  // WebDAV profile sync (Karing-parity backup/sync to the user's own cloud). All
+  // empty = feature off. The password is stored in settings.json in plaintext on
+  // the user's own machine (same trust level as the proxy creds in the store).
+  final String webdavUrl;
+  final String webdavUser;
+  final String webdavPass;
+  final String tunStack; // sing-box TUN network stack: gvisor/system/mixed
+  final String muxProtocol; // multiplex carrier protocol (mux on)
+  final int muxStreams; // multiplex max concurrent streams
+  final bool muxPadding; // multiplex padding (hide stream sizes)
+  final String ecsSubnet; // EDNS Client Subnet (e.g. 1.2.3.0/24); '' = off
+  final bool ech; // Encrypted ClientHello on non-Reality TLS (advanced)
+  final bool tcpFastOpen; // TCP Fast Open on dial (advanced, off by default)
+  final bool mptcp; // Multipath TCP on dial (advanced, off by default)
   final String? localeCode; // 'en' | 'ru' | null = follow system
 
   Locale? get locale => localeCode == null ? null : Locale(localeCode!);
+
+  /// The protection-relevant subset to embed in a `vpn://share` bundle (DPI /
+  /// desync + per-app routing + custom rules + transport knobs). Deliberately
+  /// EXCLUDES personal/device state — WebDAV creds, locale, autostart, tray,
+  /// accepted-insecure tags, hy2 bandwidth caps, custom DNS — so sharing a setup
+  /// never leaks the sender's private config or hijacks the recipient's device.
+  Map<String, dynamic> shareableSubset() => {
+        'antiDpi': antiDpi,
+        'autoAdapt': autoAdapt,
+        'maxResistance': maxResistance,
+        'autoFailover': autoFailover,
+        'tlsFingerprint': tlsFingerprint,
+        'mux': mux,
+        'winwsDesync': winwsDesync,
+        'desyncStrategy': desyncStrategy,
+        'splitTunnelApps': splitTunnelApps,
+        'forceVpnApps': forceVpnApps,
+        'customRules': customRules.map((r) => r.toJson()).toList(),
+        'ech': ech,
+        'tcpFastOpen': tcpFastOpen,
+        'mptcp': mptcp,
+        'tunStack': tunStack,
+        'muxProtocol': muxProtocol,
+        'muxStreams': muxStreams,
+        'muxPadding': muxPadding,
+        'ecsSubnet': ecsSubnet,
+      };
 
   AppSettings copyWith({
     RouteMode? mode,
@@ -89,10 +175,13 @@ class AppSettings {
     bool? autoFailover,
     String? tlsFingerprint,
     bool? mux,
-    bool? ech,
     bool? autoAdapt,
+    bool? maxResistance,
     bool? connectOnLaunch,
     bool? killSwitchTun,
+    bool? fakeIpTun,
+    bool? winwsDesync,
+    String? desyncStrategy,
     List<String>? splitTunnelApps,
     List<String>? forceVpnApps,
     bool? registerLinks,
@@ -103,6 +192,19 @@ class AppSettings {
     int? hy2DownMbps,
     String? customDns,
     String? logLevel,
+    Set<String>? insecureAccepted,
+    List<RouteRule>? customRules,
+    String? webdavUrl,
+    String? webdavUser,
+    String? webdavPass,
+    String? tunStack,
+    String? muxProtocol,
+    int? muxStreams,
+    bool? muxPadding,
+    String? ecsSubnet,
+    bool? ech,
+    bool? tcpFastOpen,
+    bool? mptcp,
     String? localeCode,
     bool clearLocale = false,
   }) =>
@@ -113,10 +215,13 @@ class AppSettings {
         autoFailover: autoFailover ?? this.autoFailover,
         tlsFingerprint: tlsFingerprint ?? this.tlsFingerprint,
         mux: mux ?? this.mux,
-        ech: ech ?? this.ech,
         autoAdapt: autoAdapt ?? this.autoAdapt,
+        maxResistance: maxResistance ?? this.maxResistance,
         connectOnLaunch: connectOnLaunch ?? this.connectOnLaunch,
         killSwitchTun: killSwitchTun ?? this.killSwitchTun,
+        fakeIpTun: fakeIpTun ?? this.fakeIpTun,
+        winwsDesync: winwsDesync ?? this.winwsDesync,
+        desyncStrategy: desyncStrategy ?? this.desyncStrategy,
         splitTunnelApps: splitTunnelApps ?? this.splitTunnelApps,
         forceVpnApps: forceVpnApps ?? this.forceVpnApps,
         registerLinks: registerLinks ?? this.registerLinks,
@@ -127,6 +232,19 @@ class AppSettings {
         hy2DownMbps: hy2DownMbps ?? this.hy2DownMbps,
         customDns: customDns ?? this.customDns,
         logLevel: logLevel ?? this.logLevel,
+        insecureAccepted: insecureAccepted ?? this.insecureAccepted,
+        customRules: customRules ?? this.customRules,
+        webdavUrl: webdavUrl ?? this.webdavUrl,
+        webdavUser: webdavUser ?? this.webdavUser,
+        webdavPass: webdavPass ?? this.webdavPass,
+        tunStack: tunStack ?? this.tunStack,
+        muxProtocol: muxProtocol ?? this.muxProtocol,
+        muxStreams: muxStreams ?? this.muxStreams,
+        muxPadding: muxPadding ?? this.muxPadding,
+        ecsSubnet: ecsSubnet ?? this.ecsSubnet,
+        ech: ech ?? this.ech,
+        tcpFastOpen: tcpFastOpen ?? this.tcpFastOpen,
+        mptcp: mptcp ?? this.mptcp,
         localeCode: clearLocale ? null : (localeCode ?? this.localeCode),
       );
 }
@@ -165,10 +283,16 @@ class SettingsController extends Notifier<AppSettings> {
               ? j['tlsFingerprint'] as String
               : 'chrome',
           mux: j['mux'] as bool? ?? false,
-          ech: j['ech'] as bool? ?? false,
           autoAdapt: j['autoAdapt'] as bool? ?? true,
+          maxResistance: j['maxResistance'] as bool? ?? false,
           connectOnLaunch: j['connectOnLaunch'] as bool? ?? true,
           killSwitchTun: j['killSwitchTun'] as bool? ?? false,
+          fakeIpTun: j['fakeIpTun'] as bool? ?? false,
+          winwsDesync: j['winwsDesync'] as bool? ?? false,
+          desyncStrategy:
+              DesyncConfig.isValidStrategy(j['desyncStrategy'] as String? ?? '')
+                  ? j['desyncStrategy'] as String
+                  : DesyncConfig.defaultStrategy,
           splitTunnelApps:
               (j['splitTunnelApps'] as List?)?.map((e) => '$e').toList() ??
                   const [],
@@ -185,6 +309,29 @@ class SettingsController extends Notifier<AppSettings> {
           logLevel: logLevels.contains(j['logLevel'])
               ? j['logLevel'] as String
               : defaultLogLevel,
+          insecureAccepted:
+              (j['insecureAccepted'] as List?)?.map((e) => '$e').toSet() ??
+                  const {},
+          customRules: (j['customRules'] as List?)
+                  ?.map(RouteRule.fromJson)
+                  .whereType<RouteRule>()
+                  .toList() ??
+              const [],
+          webdavUrl: j['webdavUrl'] as String? ?? '',
+          webdavUser: j['webdavUser'] as String? ?? '',
+          webdavPass: j['webdavPass'] as String? ?? '',
+          tunStack: tunStacks.contains(j['tunStack'])
+              ? j['tunStack'] as String
+              : 'gvisor',
+          muxProtocol: muxProtocols.contains(j['muxProtocol'])
+              ? j['muxProtocol'] as String
+              : 'h2mux',
+          muxStreams: ((j['muxStreams'] as num?)?.toInt() ?? 8).clamp(1, 256),
+          muxPadding: j['muxPadding'] as bool? ?? false,
+          ecsSubnet: j['ecsSubnet'] as String? ?? '',
+          ech: j['ech'] as bool? ?? false,
+          tcpFastOpen: j['tcpFastOpen'] as bool? ?? false,
+          mptcp: j['mptcp'] as bool? ?? false,
           localeCode: j['locale'] as String?,
         );
       }
@@ -205,10 +352,13 @@ class SettingsController extends Notifier<AppSettings> {
             'autoFailover': state.autoFailover,
             'tlsFingerprint': state.tlsFingerprint,
             'mux': state.mux,
-            'ech': state.ech,
             'autoAdapt': state.autoAdapt,
+            'maxResistance': state.maxResistance,
             'connectOnLaunch': state.connectOnLaunch,
             'killSwitchTun': state.killSwitchTun,
+            'fakeIpTun': state.fakeIpTun,
+            'winwsDesync': state.winwsDesync,
+            'desyncStrategy': state.desyncStrategy,
             'splitTunnelApps': state.splitTunnelApps,
             'forceVpnApps': state.forceVpnApps,
             'registerLinks': state.registerLinks,
@@ -219,6 +369,19 @@ class SettingsController extends Notifier<AppSettings> {
             'hy2DownMbps': state.hy2DownMbps,
             'customDns': state.customDns,
             'logLevel': state.logLevel,
+            'insecureAccepted': state.insecureAccepted.toList(),
+            'customRules': state.customRules.map((r) => r.toJson()).toList(),
+            'webdavUrl': state.webdavUrl,
+            'webdavUser': state.webdavUser,
+            'webdavPass': state.webdavPass,
+            'tunStack': state.tunStack,
+            'muxProtocol': state.muxProtocol,
+            'muxStreams': state.muxStreams,
+            'muxPadding': state.muxPadding,
+            'ecsSubnet': state.ecsSubnet,
+            'ech': state.ech,
+            'tcpFastOpen': state.tcpFastOpen,
+            'mptcp': state.mptcp,
             'locale': state.localeCode,
           }));
     } catch (_) {}
@@ -229,6 +392,25 @@ class SettingsController extends Notifier<AppSettings> {
     _save();
   }
 
+  void setMaxResistance(bool v) {
+    state = state.copyWith(maxResistance: v);
+    _save();
+  }
+
+  /// One-tap "make it work on a mobile operator": atomically turn on the three
+  /// hard-network levers (force TLS fragmentation, keep the survivor-preferring
+  /// cascade active, auto-cycle anti-DPI variants) in a SINGLE state change so the
+  /// live tunnel restarts ONCE, not three times. Surfaced on the failure/whitelist
+  /// surface and at the top of Settings — the operator case shouldn't be buried.
+  /// Returns true if anything actually changed (so the caller can reconnect).
+  bool enableHardNetwork() {
+    final s = state;
+    if (s.maxResistance && s.antiDpi && s.autoAdapt) return false;
+    state = s.copyWith(maxResistance: true, antiDpi: true, autoAdapt: true);
+    _save();
+    return true;
+  }
+
   void setConnectOnLaunch(bool v) {
     state = state.copyWith(connectOnLaunch: v);
     _save();
@@ -236,6 +418,24 @@ class SettingsController extends Notifier<AppSettings> {
 
   void setKillSwitchTun(bool v) {
     state = state.copyWith(killSwitchTun: v);
+    _save();
+  }
+
+  void setFakeIpTun(bool v) {
+    state = state.copyWith(fakeIpTun: v);
+    _save();
+  }
+
+  /// Server-less WinDivert DPI bypass (winws sidecar). The core controller picks
+  /// this up on the next (re)connect — toggling it live restarts the core.
+  void setWinwsDesync(bool v) {
+    state = state.copyWith(winwsDesync: v);
+    _save();
+  }
+
+  void setDesyncStrategy(String v) {
+    if (!DesyncConfig.isValidStrategy(v)) return;
+    state = state.copyWith(desyncStrategy: v);
     _save();
   }
 
@@ -292,13 +492,57 @@ class SettingsController extends Notifier<AppSettings> {
     _save();
   }
 
-  void setLogLevel(String v) {
-    state = state.copyWith(logLevel: v);
+  void setTunStack(String v) {
+    if (!tunStacks.contains(v)) return;
+    state = state.copyWith(tunStack: v);
+    _save();
+  }
+
+  void setMuxProtocol(String v) {
+    if (!muxProtocols.contains(v)) return;
+    state = state.copyWith(muxProtocol: v);
+    _save();
+  }
+
+  void setMuxStreams(int v) {
+    state = state.copyWith(muxStreams: v.clamp(1, 256));
+    _save();
+  }
+
+  void setMuxPadding(bool v) {
+    state = state.copyWith(muxPadding: v);
+    _save();
+  }
+
+  /// EDNS Client Subnet for DNS (e.g. "1.2.3.0/24"); '' = off. A non-empty value
+  /// MUST be a valid IP/CIDR — an invalid one (a typo like "300.1.1.0/24" or a
+  /// bad prefix) makes the core FATAL and bounce the live tunnel, so it's rejected
+  /// here and never reaches the config (the UI shows the error). Reuses the same
+  /// strict validator as the custom-rule editor.
+  void setEcsSubnet(String v) {
+    final t = v.trim();
+    if (t.isNotEmpty && !RouteRule.isValidValue(RuleField.ipCidr, t)) return;
+    state = state.copyWith(ecsSubnet: t);
     _save();
   }
 
   void setEch(bool v) {
     state = state.copyWith(ech: v);
+    _save();
+  }
+
+  void setTcpFastOpen(bool v) {
+    state = state.copyWith(tcpFastOpen: v);
+    _save();
+  }
+
+  void setMptcp(bool v) {
+    state = state.copyWith(mptcp: v);
+    _save();
+  }
+
+  void setLogLevel(String v) {
+    state = state.copyWith(logLevel: v);
     _save();
   }
 
@@ -334,6 +578,94 @@ class SettingsController extends Notifier<AppSettings> {
     state = code == null
         ? state.copyWith(clearLocale: true)
         : state.copyWith(localeCode: code);
+    _save();
+  }
+
+  /// Remember the user accepted the insecure (cert-validation-off, MITM-able)
+  /// risk for node [tag], so the H5 consent is asked ONCE per node instead of on
+  /// every connect (the user's #4 complaint). Purely UX state — never restarts
+  /// the tunnel, so it's deliberately excluded from the config-change watcher.
+  void acceptInsecure(String tag) {
+    if (tag.isEmpty || state.insecureAccepted.contains(tag)) return;
+    state = state.copyWith(insecureAccepted: {...state.insecureAccepted, tag});
+    _save();
+  }
+
+  /// Replace the user's custom routing rules (the Settings editor commits the
+  /// whole list). A config-affecting change → the controller's watcher restarts
+  /// a live tunnel to apply it.
+  void setCustomRules(List<RouteRule> rules) {
+    state = state.copyWith(customRules: rules);
+    _save();
+  }
+
+  /// Apply a protection-settings subset shared by another user (from a
+  /// `vpn://share` bundle). Only the keys present are honoured and each is
+  /// validated; everything absent keeps the recipient's own value, and personal
+  /// state (creds, mode, vpnMode) is never touched. A config-affecting change →
+  /// the controller's watcher restarts a live tunnel to apply it.
+  void applyShared(Map<String, dynamic> j) {
+    // The bundle is UNTRUSTED (decoded from a `vpn://share` link). A type-confused
+    // field (muxStreams as the string "8", antiDpi as 1, splitTunnelApps as "x")
+    // used to throw an uncaught TypeError mid-apply, leaving the import dead-ended
+    // with the nodes already added. Coerce every field: a wrong type yields null =
+    // keep the recipient's own value, never throw. Mirrors RouteRule.fromJson.
+    bool? boolOf(dynamic v) => v is bool ? v : null;
+    num? numOf(dynamic v) => v is num ? v : null;
+    String? strOf(dynamic v) => v is String ? v : null;
+    List<String>? listOf(dynamic v) =>
+        v is List ? v.map((e) => '$e').toList() : null;
+    String? validFp(dynamic v) => tlsFingerprints.contains(v) ? v as String : null;
+    final msRaw = numOf(j['muxStreams'])?.toInt();
+    final ms = msRaw == null ? null : (msRaw < 1 ? 1 : (msRaw > 256 ? 256 : msRaw));
+    // A shared ECS subnet must validate (a bad one would FATAL the recipient's
+    // core); an invalid value falls through to null = keep the recipient's own.
+    final esRaw = strOf(j['ecsSubnet'])?.trim();
+    final es = esRaw == null
+        ? null
+        : (esRaw.isEmpty || RouteRule.isValidValue(RuleField.ipCidr, esRaw)
+            ? esRaw
+            : null);
+    final crRaw = j['customRules'];
+    state = state.copyWith(
+      antiDpi: boolOf(j['antiDpi']),
+      autoAdapt: boolOf(j['autoAdapt']),
+      maxResistance: boolOf(j['maxResistance']),
+      autoFailover: boolOf(j['autoFailover']),
+      tlsFingerprint: validFp(j['tlsFingerprint']),
+      mux: boolOf(j['mux']),
+      winwsDesync: boolOf(j['winwsDesync']),
+      desyncStrategy:
+          DesyncConfig.isValidStrategy(strOf(j['desyncStrategy']) ?? '')
+              ? strOf(j['desyncStrategy'])
+              : null,
+      splitTunnelApps: listOf(j['splitTunnelApps']),
+      forceVpnApps: listOf(j['forceVpnApps']),
+      customRules: crRaw is List
+          ? crRaw.map(RouteRule.fromJson).whereType<RouteRule>().toList()
+          : null,
+      ech: boolOf(j['ech']),
+      tcpFastOpen: boolOf(j['tcpFastOpen']),
+      mptcp: boolOf(j['mptcp']),
+      tunStack: tunStacks.contains(j['tunStack']) ? j['tunStack'] as String : null,
+      muxProtocol:
+          muxProtocols.contains(j['muxProtocol']) ? j['muxProtocol'] as String : null,
+      muxStreams: ms,
+      muxPadding: boolOf(j['muxPadding']),
+      ecsSubnet: es,
+    );
+    _save();
+  }
+
+  /// WebDAV sync credentials (profile backup/sync to the user's own cloud).
+  void setWebdav({String? url, String? user, String? pass}) {
+    state = state.copyWith(
+      webdavUrl: url?.trim() ?? state.webdavUrl,
+      // Trim user/pass too: a pasted credential with a trailing space/newline
+      // (common from copy) would otherwise be sent verbatim → a confusing 401.
+      webdavUser: user?.trim() ?? state.webdavUser,
+      webdavPass: pass?.trim() ?? state.webdavPass,
+    );
     _save();
   }
 }

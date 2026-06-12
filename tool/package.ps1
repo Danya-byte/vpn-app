@@ -42,8 +42,14 @@ if (-not (Test-Path (Join-Path $rel 'vpn_app.exe'))) {
 
 # --- bundle the proxy cores + rule-sets beside the app ------------------------
 $coreSrc = Join-Path $root 'core\windows'
-if (-not (Test-Path (Join-Path $coreSrc 'sing-box.exe'))) {
-  throw 'Cores not found - run: pwsh tool/fetch-cores.ps1 -IncludeXray'
+# A RELEASE must ship the FULL core set: sing-box (tunnel), xray (XHTTP bridge),
+# and the desync engine (winws + WinDivert driver + QUIC decoy) that powers the
+# headline server-less DPI bypass. A missing winws.exe = a release whose flagship
+# feature is permanently absent (the audit's #1 blocker), so guard all of them.
+foreach ($c in @('sing-box.exe', 'xray.exe', 'winws.exe', 'WinDivert64.sys', 'quic_initial.bin')) {
+  if (-not (Test-Path (Join-Path $coreSrc $c))) {
+    throw "Release core '$c' missing - run: pwsh tool/fetch-cores.ps1 -IncludeXray -IncludeDesync"
+  }
 }
 $coreDst = Join-Path $rel 'core\windows'
 New-Item -ItemType Directory -Force -Path $coreDst | Out-Null

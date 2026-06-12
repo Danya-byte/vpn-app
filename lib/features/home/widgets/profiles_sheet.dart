@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/app_settings.dart';
 import '../../../core/core_controller.dart';
 import '../../../core/format.dart';
 import '../../../core/profiles_controller.dart';
 import '../../../core/proxy_node.dart';
+import '../../../core/share_link_encoder.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../widgets/app_toast.dart';
 import '../../../widgets/glass.dart';
@@ -90,6 +92,7 @@ class _ProfilesSheet extends ConsumerWidget {
                     // a second restart here caused a DOUBLE restart per tap.
                     onTap: () => _selectGuarded(context, ref, n),
                     onDelete: () => _confirmDelete(context, ref, n),
+                    onRename: () => _renameDialog(context, ref, n),
                     onView:
                         n.isConfig ? () => showConfigViewer(context, n) : null,
                   );
@@ -150,14 +153,16 @@ class _AddMenu extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 6),
-        item(Icons.dns_rounded, l.createOwnNode, showServerGenSheet),
-        const Divider(height: 6, indent: 18, endIndent: 18),
-        item(Icons.content_paste_rounded, l.btnLinkList, _importTextDialog),
-        item(Icons.link_rounded, l.btnSubscriptionUrl, _importUrlDialog),
+        // Primary import paths first — the cold-start move is pasting a link from a
+        // chat or scanning a QR, so those lead; power actions go below the divider.
         item(Icons.paste_rounded, l.btnFromClipboard, _importClipboard),
-        item(Icons.folder_open_rounded, l.btnFromFile, _importFile),
+        item(Icons.content_paste_rounded, l.btnLinkList, _importTextDialog),
         item(Icons.qr_code_scanner_rounded, l.btnScanScreenQr, _scanScreenQr),
+        item(Icons.link_rounded, l.btnSubscriptionUrl, _importUrlDialog),
+        item(Icons.folder_open_rounded, l.btnFromFile, _importFile),
         const Divider(height: 6, indent: 18, endIndent: 18),
+        item(Icons.dns_rounded, l.createOwnNode, showServerGenSheet),
+        item(Icons.ios_share_rounded, l.shareTitle, _shareProfiles),
         item(Icons.save_alt_rounded, l.btnExport, _exportProfiles),
         const SizedBox(height: 6),
       ],
@@ -165,47 +170,192 @@ class _AddMenu extends StatelessWidget {
   }
 }
 
+Future<void> _renameDialog(
+    BuildContext context, WidgetRef ref, ParsedNode n) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final ctrl = TextEditingController(text: n.tag);
+  try {
+    final ok = await showGlassDialog<bool>(
+      context,
+      child: _GlassFormDialog(
+        title: l.renameAction,
+        confirmLabel: l.renameAction,
+        field: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 64,
+          decoration: glassInputDecoration(context, l.renameAction),
+        ),
+      ),
+    );
+    if (ok == true) {
+      final renamed =
+          ref.read(profilesProvider.notifier).rename(n.tag, ctrl.text);
+      // Name empty / unchanged / already taken — say so instead of silently
+      // closing as if the rename happened (sibling dialogs all toast failures).
+      if (!renamed && ctrl.text.trim() != n.tag) {
+        toast.message(l.renameInvalid, kind: ToastKind.error);
+      }
+    }
+  } finally {
+    ctrl.dispose(); // release on every path (confirm / cancel / throw)
+  }
+}
+
 Future<void> _importTextDialog(BuildContext context, WidgetRef ref) async {
   final l = AppLocalizations.of(context);
   final ctrl = TextEditingController();
-  final ok = await showGlassDialog<bool>(
-    context,
-    child: _GlassFormDialog(
-      title: l.dlgImportTitle,
-      confirmLabel: l.importAction,
-      field: TextField(
-        controller: ctrl,
-        maxLines: 6,
-        minLines: 3,
-        autofocus: true,
-        decoration: glassInputDecoration(context, l.dlgImportHint),
+  bool? ok;
+  var text = '';
+  try {
+    ok = await showGlassDialog<bool>(
+      context,
+      child: _GlassFormDialog(
+        title: l.dlgImportTitle,
+        confirmLabel: l.importAction,
+        field: TextField(
+          controller: ctrl,
+          maxLines: 6,
+          minLines: 3,
+          autofocus: true,
+          decoration: glassInputDecoration(context, l.dlgImportHint),
+        ),
       ),
-    ),
-  );
+    );
+    text = ctrl.text; // capture before dispose
+  } finally {
+    ctrl.dispose();
+  }
   if (ok != true || !context.mounted) return;
-  final r = ref.read(profilesProvider.notifier).importText(ctrl.text);
+  final r = ref.read(profilesProvider.notifier).importText(text);
   await applyImport(context, ref, r);
+}
+
+Future<void> _shareProfiles(BuildContext context, WidgetRef ref) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final nodes = ref.read(profilesProvider).nodes;
+  if (nodes.isEmpty) {
+    toast.message(l.shareNothing);
+    return;
+  }
+  final mode = await showGlassDialog<String>(context, child: const _ShareMenu());
+  if (mode == null || !context.mounted) return;
+  final String link;
+  if (mode == 'bundle') {
+    // Our extended format: nodes + the user's protection settings — only our app
+    // reads it. A self-hosted auto-update URL is an operator concern, not exposed
+    // in a quick share, so this is a static one-shot bundle.
+    link = ShareLinkEncoder.encodeBundle(
+      nodes: nodes,
+      settings: ref.read(settingsProvider).shareableSubset(),
+    );
+  } else {
+    // Universal: standard URIs any client imports. A whole-config profile (the
+    // common case — an imported `🌍 VPN`) has no single-URI form, but the servers
+    // INSIDE it do: nodeLinks pulls them out. One link → copy it raw; many → a
+    // base64 subscription. Only a config with zero single-URI exits (all
+    // chained / exotic) yields nothing — then say so instead of copying empty.
+    final links = ShareLinkEncoder.nodeLinks(nodes);
+    if (links.isEmpty) {
+      toast.message(l.shareNoUniversal, kind: ToastKind.error);
+      return;
+    }
+    link = links.length == 1
+        ? links.single
+        : ShareLinkEncoder.encodeSubscription(nodes);
+  }
+  await Clipboard.setData(ClipboardData(text: link));
+  if (!context.mounted) return;
+  toast.message(l.shareCopied, kind: ToastKind.success);
+}
+
+/// Choose the share form: a universal link any client imports, or our extended
+/// bundle that also carries the user's protection settings (this app only).
+class _ShareMenu extends StatelessWidget {
+  const _ShareMenu();
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    Widget opt(IconData icon, String title, String desc, String value) =>
+        InkWell(
+          onTap: () => Navigator.pop(context, value),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+            child: Row(
+              children: [
+                Icon(icon, size: 20, color: scheme.primary),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 2),
+                      Text(desc,
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: scheme.onSurface.withValues(alpha: 0.6))),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 8),
+          child: Text(l.shareTitle,
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        ),
+        opt(Icons.public_rounded, l.shareForAnyClient, l.shareForAnyClientDesc,
+            'any'),
+        const Divider(height: 6, indent: 18, endIndent: 18),
+        opt(Icons.shield_rounded, l.shareWithSettings, l.shareWithSettingsDesc,
+            'bundle'),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
 }
 
 Future<void> _importUrlDialog(BuildContext context, WidgetRef ref) async {
   final l = AppLocalizations.of(context);
   final toast = AppToast.of(context);
   final ctrl = TextEditingController();
-  final ok = await showGlassDialog<bool>(
-    context,
-    child: _GlassFormDialog(
-      title: l.dlgUrlTitle,
-      confirmLabel: l.loadAction,
-      field: TextField(
-        controller: ctrl,
-        autofocus: true,
-        keyboardType: TextInputType.url,
-        decoration: glassInputDecoration(context, l.dlgUrlHint),
+  bool? ok;
+  var url = '';
+  try {
+    ok = await showGlassDialog<bool>(
+      context,
+      child: _GlassFormDialog(
+        title: l.dlgUrlTitle,
+        confirmLabel: l.loadAction,
+        field: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          decoration: glassInputDecoration(context, l.dlgUrlHint),
+        ),
       ),
-    ),
-  );
+    );
+    url = ctrl.text.trim(); // capture before dispose
+  } finally {
+    ctrl.dispose();
+  }
   if (ok != true) return;
-  final url = ctrl.text.trim();
   if (url.isEmpty) {
     toast.message(l.msgSubscriptionEmpty, kind: ToastKind.error);
     return;
@@ -286,7 +436,9 @@ Future<void> _importFile(BuildContext context, WidgetRef ref) async {
 // disconnected tap just sets the selection; the Connect button gates that one.
 Future<void> _selectGuarded(
     BuildContext context, WidgetRef ref, ParsedNode n) async {
-  if (n.insecure && ref.read(coreControllerProvider).isOn) {
+  if (n.insecure &&
+      ref.read(coreControllerProvider).isOn &&
+      !ref.read(settingsProvider).insecureAccepted.contains(n.insecureKey)) {
     final l = AppLocalizations.of(context);
     final ok = await showGlassDialog<bool>(
       context,
@@ -294,6 +446,7 @@ Future<void> _selectGuarded(
           message: l.insecureConnectBody, confirmLabel: l.insecureConnectAction),
     );
     if (ok != true) return;
+    ref.read(settingsProvider.notifier).acceptInsecure(n.insecureKey);
   }
   ref.read(profilesProvider.notifier).select(n.tag);
 }
@@ -439,6 +592,7 @@ class _NodeTile extends StatelessWidget {
     required this.selected,
     required this.onTap,
     required this.onDelete,
+    required this.onRename,
     this.onView,
   });
 
@@ -446,6 +600,7 @@ class _NodeTile extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback onRename;
   final VoidCallback? onView;
 
   @override
@@ -516,6 +671,14 @@ class _NodeTile extends StatelessWidget {
                         color: scheme.onSurface.withValues(alpha: 0.55)),
                     onPressed: onView,
                   ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: l.renameAction,
+                  icon: Icon(Icons.edit_outlined,
+                      size: 17,
+                      color: scheme.onSurface.withValues(alpha: 0.45)),
+                  onPressed: onRename,
+                ),
                 IconButton(
                   visualDensity: VisualDensity.compact,
                   icon: Icon(Icons.delete_outline_rounded,

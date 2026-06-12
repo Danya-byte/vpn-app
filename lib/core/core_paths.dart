@@ -1,8 +1,36 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
+
 /// Resolves on-disk locations for the bundled core binaries and the writable
 /// runtime directory (generated config + logs).
 class CorePaths {
+  /// A DEBUG build runs as an ISOLATED "dev instance": its own store sub-folder
+  /// (`run_dev` not `run`) plus a distinct native mutex + window title, so a
+  /// freshly-built dev copy can run ALONGSIDE an installed release build without
+  /// fighting over the shared store / single-instance lock. Never true in tests
+  /// (they pin [overrideRuntimeDir], which wins) or in a release build.
+  static bool get _devInstance =>
+      kDebugMode && Platform.environment['FLUTTER_TEST'] != 'true';
+
+  static String get _runSubdir => _devInstance ? 'run_dev' : 'run';
+
+  /// One-time convenience: copy the installed RELEASE build's profiles into the
+  /// dev sandbox so a dev build has the user's real servers to test with, instead
+  /// of starting empty. No-op in release/tests, and never overwrites an existing
+  /// dev store. Settings/flags are NOT copied (so the dev build can't inherit a
+  /// TUN/auto-connect state that would fight the running release client).
+  static void seedDevInstanceFromRelease() {
+    if (!_devInstance) return;
+    try {
+      final dev = runtimeDir(); // .../vpn_app/run_dev
+      final sep = Platform.pathSeparator;
+      final devProfiles = File('${dev.path}${sep}profiles.json');
+      if (devProfiles.existsSync()) return; // already seeded / has its own
+      final rel = File('${dev.parent.path}${sep}run${sep}profiles.json');
+      if (rel.existsSync()) devProfiles.writeAsStringSync(rel.readAsStringSync());
+    } catch (_) {}
+  }
   /// Write [text] to [path] atomically: write a temp file, flush, then rename
   /// over the target (rename is atomic on NTFS). A crash/power-loss can no
   /// longer leave a truncated/half-written file that bricks the profile store.
@@ -41,6 +69,11 @@ class CorePaths {
   /// The AmneziaWG userspace bridge (wireproxy-amnezia) — fetched separately,
   /// like xray. Present → [CoreController._bridgeAmnezia] rides AmneziaWG.
   static String awg() => _resolveBinary('awg.exe');
+
+  /// The zapret WinDivert desync sidecar (winws.exe) — fetched separately, like
+  /// xray. Present + admin → [CoreController._spawnDesyncEngine] runs the
+  /// server-less TLS-DPI bypass. (WinDivert.dll / WinDivert64.sys live beside it.)
+  static String winws() => _resolveBinary('winws.exe');
 
   /// Absolute path to the bundled rule-sets dir (geoip-ru.srs, …). Bundled
   /// locally so startup never blocks on a (RF-blocked) github download.
@@ -111,6 +144,11 @@ class CorePaths {
       if (!d.existsSync()) d.createSync(recursive: true);
       return d;
     }
+    // NOTE: an env-var redirect (VPN_APP_RUNTIME_DIR) was REMOVED here: nothing in
+    // the app ever set it, and an ambient OS variable silently relocating the
+    // security-critical store (profiles/settings/flags) — inherited even by the
+    // elevated relaunch — is exactly the store-hijack class this app guards
+    // against. Tests/tools isolate via [overrideRuntimeDir] instead.
     final bases = <String>[
       if (Platform.environment['LOCALAPPDATA'] != null)
         Platform.environment['LOCALAPPDATA']!,
@@ -120,7 +158,7 @@ class CorePaths {
     // Try each writable base in turn; a locked-down/kiosk box may deny the first.
     for (final base in bases) {
       try {
-        final dir = Directory(_join([base, 'vpn_app', 'run']));
+        final dir = Directory(_join([base, 'vpn_app', _runSubdir]));
         if (!dir.existsSync()) dir.createSync(recursive: true);
         return dir;
       } catch (_) {

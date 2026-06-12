@@ -26,6 +26,21 @@ void main() {
       expect(f.freezeThresholdKb, 48);
     });
 
+    test('latestVersion is clamped to a digits+dots version (else dropped)', () {
+      CensorshipFacts? withLatest(Object? v) => CensorshipFacts.parse(jsonEncode({
+            'version': 6,
+            'latestVersion': v,
+          }));
+      expect(withLatest('1.0.4')!.latestVersion, '1.0.4');
+      expect(withLatest('2')!.latestVersion, '2');
+      // anything that isn't a plain version is rejected (no string/URL smuggling)
+      expect(withLatest('1.0.4; rm -rf')!.latestVersion, '');
+      expect(withLatest('https://evil/x')!.latestVersion, '');
+      expect(withLatest('latest')!.latestVersion, '');
+      expect(withLatest(123)!.latestVersion, ''); // non-string
+      expect(withLatest(null)!.latestVersion, '');
+    });
+
     test('a not-newer version is ignored (replay/stale → null)', () {
       final body = jsonEncode({'version': 3, 'desyncDomains': ['a.com']});
       expect(CensorshipFacts.parse(body, haveVersion: 3), isNull);

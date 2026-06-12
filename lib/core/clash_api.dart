@@ -277,6 +277,7 @@ class ProxyGroup {
     required this.now,
     required this.all,
     this.delay,
+    this.memberDelays = const {},
   });
 
   final String name;
@@ -284,4 +285,12 @@ class ProxyGroup {
   final String? now;
   final List<String> all;
   final int? delay; // warm last-measured latency (ms) from /proxies history
+  // Warm latency of THIS group's members, keyed by member TAG (built from the same
+  // /proxies poll that the leaf nodes also appear in — so the pool-health chip can
+  // look up `memberDelays[memberTag]` instead of the group name, which is always
+  // null for members). Empty until enriched by proxyGroupsProvider.
+  final Map<String, int?> memberDelays;
+
+  ProxyGroup withMemberDelays(Map<String, int?> d) => ProxyGroup(
+      name: name, type: type, now: now, all: all, delay: delay, memberDelays: d);
 }

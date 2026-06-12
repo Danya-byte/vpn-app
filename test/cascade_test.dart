@@ -140,6 +140,30 @@ void main() {
     expect(plan.probeFor('Hy2'), 'h1'); // but probe a concrete node in it
   });
 
+  test('freezeContext: a freeze-hop prefers the immune transport in the same tier',
+      () {
+    // Current leaf = plain vless-tls (tier 1). Two tier-3 candidates: a Reality
+    // (freeze-VULNERABLE TCP-TLS) and an XHTTP (freeze-IMMUNE). Under a freeze the
+    // hop must land on XHTTP, not another frozen Reality+Vision stream.
+    final groups = [
+      g('VPN', 'Selector', now: 'n-tls', all: ['n-tls', 'n-reality', 'n-xhttp']),
+      g('n-tls', 'Vless'),
+      g('n-reality', 'Vless'),
+      g('n-xhttp', 'Socks'),
+    ];
+    final fams = {
+      'n-tls': 'vless-tls',
+      'n-reality': 'vless-reality',
+      'n-xhttp': 'vless-xhttp',
+    };
+    final frozen = planCascade(groups, {}, families: fams, freezeContext: true);
+    expect(frozen.candidates.first, 'n-xhttp'); // immune first under freeze
+    // Both are tier-3 survivors regardless; freezeImmune separates them.
+    expect(freezeImmune('vless-xhttp'), isTrue);
+    expect(freezeImmune('vless-reality'), isFalse);
+    expect(freezeImmune('hysteria2'), isTrue);
+  });
+
   // ── familiesFromConfig: the pre-bridge classifier feeding finding A ───────
   group('familiesFromConfig', () {
     test('refines vless by reality / transport / plain-tls; types stand alone',
@@ -203,5 +227,97 @@ void main() {
       };
       expect(familiesFromConfig(cfg)['v'], 'vless-tls');
     });
+  });
+
+  // ── RF-2026 transport survivability (Dec-2025 protocol-block intel) ───────
+  group('transportSurvivability', () {
+    test('verified survivors (reality / xhttp / QUIC) are the top tier', () {
+      for (final f in [
+        'vless-reality',
+        'vless-xhttp',
+        'hysteria2',
+        'tuic',
+        'hysteria'
+      ]) {
+        expect(transportSurvivability(f), 3, reason: f);
+      }
+    });
+    test('obfuscated/wrapped (non-VLESS) transports are mid tier', () {
+      for (final f in ['shadowtls', 'anytls', 'trojan-grpc', 'vmess-ws']) {
+        expect(transportSurvivability(f), 2, reason: f);
+      }
+    });
+    test('ALL plain VLESS is low tier — ws/grpc wrapper does NOT mask the '
+        'Dec-2025 signature (only reality/xhttp survive)', () {
+      expect(transportSurvivability('vless-tls'), 1);
+      expect(transportSurvivability('vless-ws'), 1); // was wrongly tier-2
+      expect(transportSurvivability('vless-grpc'), 1); // was wrongly tier-2
+      expect(transportSurvivability('vless-httpupgrade'), 1);
+      expect(transportSurvivability('trojan-tls'), 1);
+      expect(transportSurvivability(null), 1);
+      // …but the masked VLESS forms stay top-tier survivors:
+      expect(transportSurvivability('vless-reality'), 3);
+      expect(transportSurvivability('vless-xhttp'), 3);
+    });
+    test('detected-by-design transports are the bottom tier', () {
+      for (final f in ['wireguard', 'shadowsocks', 'socks', 'http']) {
+        expect(transportSurvivability(f), 0, reason: f);
+      }
+    });
+    test('obfuscated WG/SS are NOT bottom-tier (no false "widely blocked")', () {
+      // AmneziaWG + plugin-SS evade DPI, unlike their plain forms → tier 2.
+      expect(transportSurvivability('amneziawg'), 2);
+      expect(transportSurvivability('shadowsocks-plugin'), 2);
+      expect(transportWidelyBlocked('amneziawg'), isFalse);
+      expect(transportWidelyBlocked('shadowsocks-plugin'), isFalse);
+      // Plain forms are still flagged.
+      expect(transportWidelyBlocked('wireguard'), isTrue);
+      expect(transportWidelyBlocked('shadowsocks'), isTrue);
+    });
+    test('familiesFromConfig splits obfuscated WG/SS from plain', () {
+      final fams = familiesFromConfig({
+        'outbounds': [
+          {'tag': 'wg-plain', 'type': 'wireguard'},
+          {'tag': 'wg-amnezia', 'type': 'wireguard', '_amneziawg': {'jc': 4}},
+          {'tag': 'ss-plain', 'type': 'shadowsocks'},
+          {'tag': 'ss-obfs', 'type': 'shadowsocks', 'plugin': 'obfs-local'},
+        ],
+      });
+      expect(fams['wg-plain'], 'wireguard');
+      expect(fams['wg-amnezia'], 'amneziawg');
+      expect(fams['ss-plain'], 'shadowsocks');
+      expect(fams['ss-obfs'], 'shadowsocks-plugin');
+    });
+    test('transportWidelyBlocked flags the dead transports + plain VLESS', () {
+      expect(transportWidelyBlocked('wireguard'), isTrue);
+      expect(transportWidelyBlocked('shadowsocks'), isTrue);
+      expect(transportWidelyBlocked('vless-tls'), isTrue); // VLESS signature target
+      expect(transportWidelyBlocked('vless-ws'), isTrue); // bare VLESS, any wrapper
+      expect(transportWidelyBlocked('vless-grpc'), isTrue);
+      expect(transportWidelyBlocked('vless-reality'), isFalse);
+      expect(transportWidelyBlocked('vless-xhttp'), isFalse);
+      expect(transportWidelyBlocked('hysteria2'), isFalse);
+      expect(transportWidelyBlocked(null), isFalse);
+    });
+  });
+
+  test('cascade orders by survivability first: XHTTP beats plain VLESS+TLS at '
+      'the same physical layer', () {
+    // Active leaf is QUIC (Hysteria2). Both candidates are TCP, so the L4-diversity
+    // tiebreak is a wash — survivability decides: XHTTP (verified survivor) must
+    // come before plain VLESS+TLS (now signature-blocked).
+    final groups = [
+      g('VPN', 'Selector', now: 'h1', all: ['h1', 'n-xhttp', 'n-tls']),
+      g('h1', 'Hysteria2'),
+      g('n-xhttp', 'Vless'),
+      g('n-tls', 'Vless'),
+    ];
+    final fams = {
+      'h1': 'hysteria2',
+      'n-xhttp': 'vless-xhttp',
+      'n-tls': 'vless-tls',
+    };
+    final plan = planCascade(groups, {}, families: fams);
+    expect(plan.candidates, ['n-xhttp', 'n-tls']);
   });
 }

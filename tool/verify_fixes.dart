@@ -80,7 +80,7 @@ Future<void> main() async {
           {
             'type': 'vless',
             'tag': 'proxy',
-            'server': '45.13.239.12',
+            'server': '203.0.113.10', // RFC-5737 TEST-NET-3 (synthetic; value is irrelevant to `check`)
             'server_port': 443,
             'uuid': uuid,
             'flow': 'xtls-rprx-vision',
@@ -118,7 +118,7 @@ Future<void> main() async {
 
   print('\n── #6 / ServerGen: generated VLESS+Reality server config ──');
   final bundle = ServerGen.buildReality(
-    serverIp: '45.13.239.12',
+    serverIp: '203.0.113.10', // RFC-5737 TEST-NET-3 (synthetic)
     uuid: uuid,
     privateKey: priv,
     publicKey: pub,

@@ -4,10 +4,12 @@
     sing-box.exe  master engine (TUN / routing / DNS / Clash API)
     wintun.dll    Windows TUN driver, required by sing-box TUN inbound
     xray.exe      sub-engine for transports sing-box lacks (XHTTP/SplitHTTP/mKCP)
+    winws.exe     zapret WinDivert desync sidecar - server-less TLS-DPI bypass
+                  (+ cygwin1.dll, WinDivert.dll, WinDivert64.sys runtime files)
 
   These binaries are git-ignored (large, redistributable). Run this to (re)populate:
     pwsh tool\fetch-cores.ps1            # sing-box + wintun + rule-sets
-    pwsh tool\fetch-cores.ps1 -IncludeXray
+    pwsh tool\fetch-cores.ps1 -IncludeXray -IncludeDesync
 
   SUPPLY-CHAIN: the binaries are pinned to an exact version AND verified against a
   known SHA-256 (the exact bytes that pass `tool/verify_store.dart` and carry
@@ -18,7 +20,8 @@
 [CmdletBinding()]
 param(
   [string]$Dest = (Join-Path $PSScriptRoot '..\core\windows'),
-  [switch]$IncludeXray
+  [switch]$IncludeXray,
+  [switch]$IncludeDesync
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -46,6 +49,27 @@ $Wintun = @{
   Url = 'https://www.wintun.net/builds/wintun-0.14.1.zip'
   Dll = 'wintun.dll'
   Sha = 'e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce'
+}
+# zapret winws.exe (WinDivert) - the server-less TLS-DPI desync sidecar. The
+# winws build is CYGWIN, so cygwin1.dll ships beside it; WinDivert.dll loads
+# WinDivert64.sys (the kernel driver) from its own directory. All four go in
+# core\windows. Pinned to a FROZEN release tag, so these hashes never drift.
+$Desync = @{
+  Ver   = 'v72.12'
+  Repo  = 'bol-van/zapret'
+  Zip   = 'zapret-v72.12.zip'
+  Sub   = 'windows-x86_64' # NOT windows-x86 (identical filenames live there too)
+  Files = @(
+    @{ Name = 'winws.exe';       Sha = '2da71e80878dc270ac83f5893ecbb841f9752a57f1da8ff9325636b4346bc632' },
+    @{ Name = 'cygwin1.dll';     Sha = '103104a52e5293ce418944725df19e2bf81ad9269b9a120d71d39028e821499b' },
+    @{ Name = 'WinDivert.dll';   Sha = 'c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2' },
+    @{ Name = 'WinDivert64.sys'; Sha = '8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2' }
+  )
+  # fake-QUIC Initial decoy for the UDP/443 (HTTP-3) desync block. Lives under
+  # files/fake/ in the zip (NOT windows-x86_64); installed as quic_initial.bin.
+  QuicSrc = 'quic_initial_www_google_com.bin'
+  QuicDst = 'quic_initial.bin'
+  QuicSha = 'f4589c57749f956bb30538197a521d7005f8b0a8723b4707e72405e51ddac50a'
 }
 
 function Fetch($url, $name) {
@@ -120,6 +144,27 @@ if ($IncludeXray) {
   Write-Host "xray-core $($Xray.Ver)"
 } else {
   Write-Host "xray-core skipped (pass -IncludeXray to fetch)"
+}
+
+# --- zapret winws (server-less TLS-DPI desync sidecar) ---
+if ($IncludeDesync) {
+  $dsZip = Fetch (Get-PinnedAsset $Desync.Repo $Desync.Ver $Desync.Zip) $Desync.Zip
+  $dsDir = Expand-Temp $dsZip 'ds'
+  foreach ($f in $Desync.Files) {
+    $src = (Get-ChildItem -Recurse $dsDir -Filter $f.Name |
+      Where-Object { $_.FullName -match [regex]::Escape($Desync.Sub) } |
+      Select-Object -First 1).FullName
+    if (-not $src) { throw "zapret: $($f.Name) not found under $($Desync.Sub)" }
+    Install-Verified $src $f.Name $f.Sha
+  }
+  # fake-QUIC Initial decoy (files/fake/) -> quic_initial.bin
+  $qsrc = (Get-ChildItem -Recurse $dsDir -Filter $Desync.QuicSrc |
+    Select-Object -First 1).FullName
+  if (-not $qsrc) { throw "zapret: $($Desync.QuicSrc) not found" }
+  Install-Verified $qsrc $Desync.QuicDst $Desync.QuicSha
+  Write-Host "zapret winws $($Desync.Ver)"
+} else {
+  Write-Host "zapret winws skipped (pass -IncludeDesync to fetch)"
 }
 
 Write-Host "`nCores in $Dest :"

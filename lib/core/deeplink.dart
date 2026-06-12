@@ -22,6 +22,11 @@ String? importablePayload(String arg) {
   if (a.isEmpty || a.startsWith('--')) return null; // a runner flag, not import
   final lower = a.toLowerCase();
 
+  // Our own share bundle: return it WHOLE so the importer's decodeBundle sees the
+  // full `vpn://share?d=…`. The generic url-unwrap below would strip the scheme
+  // (no `?url=` param) and corrupt it.
+  if (lower.startsWith('vpn://share')) return a;
+
   // Wrapper schemes that EMBED a sub-URL or link. `sing-box://import-remote-
   // profile?url=…` is the real de-facto scheme panels (3x-ui / Marzban) emit, so
   // we register that — not a guess.
@@ -54,7 +59,19 @@ String? importablePayload(String arg) {
         rest = Uri.decodeComponent(rest);
       } catch (_) {}
     }
-    return rest.trim().isEmpty ? null : rest.trim();
+    final v = rest.trim();
+    if (v.isEmpty) return null;
+    // An unwrapped wrapper payload is NEVER a local file path: a crafted
+    // `hiddify://import/C:\Users\me\secret.txt` would otherwise flow into the
+    // caller's file branch and read an arbitrary local file. Legit payloads here
+    // are links or base64 blobs (which never name an existing path) — reject
+    // anything that does.
+    if (!v.contains('://') &&
+        v.contains(RegExp(r'[\\/]')) &&
+        File(v).existsSync()) {
+      return null;
+    }
+    return v;
   }
 
   // A bare proxy link or a subscription URL → import directly.

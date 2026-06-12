@@ -185,8 +185,74 @@ abstract class AppLocalizations {
   /// No description provided for @profilesEmpty.
   ///
   /// In en, this message translates to:
-  /// **'Empty. Paste a link or subscription below.'**
+  /// **'No servers yet. Paste a link, scan a QR, or open a file.'**
   String get profilesEmpty;
+
+  /// No description provided for @clipboardOfferText.
+  ///
+  /// In en, this message translates to:
+  /// **'A server link is on your clipboard'**
+  String get clipboardOfferText;
+
+  /// No description provided for @fastestServer.
+  ///
+  /// In en, this message translates to:
+  /// **'Fastest: {tag}'**
+  String fastestServer(String tag);
+
+  /// No description provided for @noReachableServer.
+  ///
+  /// In en, this message translates to:
+  /// **'No server is reachable from here'**
+  String get noReachableServer;
+
+  /// No description provided for @diagDesyncOfferText.
+  ///
+  /// In en, this message translates to:
+  /// **'These sites are throttled by TLS-DPI — the server-less bypass can open them with no server.'**
+  String get diagDesyncOfferText;
+
+  /// No description provided for @diagDesyncOfferAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable server-less bypass'**
+  String get diagDesyncOfferAction;
+
+  /// No description provided for @diagDesyncOfferDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Server-less DPI bypass enabled'**
+  String get diagDesyncOfferDone;
+
+  /// No description provided for @renameAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename'**
+  String get renameAction;
+
+  /// No description provided for @renameInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Name is empty or already taken'**
+  String get renameInvalid;
+
+  /// No description provided for @hardNetworkCtaText.
+  ///
+  /// In en, this message translates to:
+  /// **'Not connecting? Mobile operators block harder than Wi-Fi.'**
+  String get hardNetworkCtaText;
+
+  /// No description provided for @hardNetworkCtaAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Make it work'**
+  String get hardNetworkCtaAction;
+
+  /// No description provided for @hardNetworkCtaDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Hard-network mode on — reconnecting'**
+  String get hardNetworkCtaDone;
 
   /// No description provided for @noProfile.
   ///
@@ -482,6 +548,78 @@ abstract class AppLocalizations {
   /// **'Fragments the TLS handshake to beat SNI-based DPI. Slightly slower.'**
   String get antiDpiDesc;
 
+  /// No description provided for @maxResistTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Hard-network mode (mobile operator)'**
+  String get maxResistTitle;
+
+  /// No description provided for @maxResistDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Mobile networks block far harder than Wi-Fi. Forces TLS fragmentation ON and keeps the survivor-preferring cascade active, regardless of the other switches. Turn on when it works on Wi-Fi but not on mobile.'**
+  String get maxResistDesc;
+
+  /// No description provided for @desyncTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Unblock without a server'**
+  String get desyncTitle;
+
+  /// No description provided for @desyncDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'A packet-level engine that rewrites the outgoing TLS handshake so the censor can\'t read the site name (SNI) — unblocks throttled / TLS-DPI sites (YouTube, Discord, Rutracker…) with NO server. Needs administrator (loads a network driver). Doesn\'t help IP-blocked sites (Telegram, X) — those still need a server.'**
+  String get desyncDesc;
+
+  /// No description provided for @desyncActive.
+  ///
+  /// In en, this message translates to:
+  /// **'DPI bypass active'**
+  String get desyncActive;
+
+  /// No description provided for @desyncNeedsAdmin.
+  ///
+  /// In en, this message translates to:
+  /// **'Needs administrator — restart elevated to load the bypass driver.'**
+  String get desyncNeedsAdmin;
+
+  /// No description provided for @desyncMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Engine not installed — put winws.exe + WinDivert in core\\windows.'**
+  String get desyncMissing;
+
+  /// No description provided for @desyncIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Engages when you connect.'**
+  String get desyncIdle;
+
+  /// No description provided for @desyncStrategyLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Method'**
+  String get desyncStrategyLabel;
+
+  /// No description provided for @desyncStratFakeSplit.
+  ///
+  /// In en, this message translates to:
+  /// **'Split+fake'**
+  String get desyncStratFakeSplit;
+
+  /// No description provided for @desyncStratFakeDisorder.
+  ///
+  /// In en, this message translates to:
+  /// **'Disorder'**
+  String get desyncStratFakeDisorder;
+
+  /// No description provided for @desyncStratSplit.
+  ///
+  /// In en, this message translates to:
+  /// **'Split'**
+  String get desyncStratSplit;
+
   /// No description provided for @autoFailoverTitle.
   ///
   /// In en, this message translates to:
@@ -541,6 +679,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Only browsers and proxy-aware apps go through the tunnel — no admin needed. Other apps and their DNS go DIRECT (real IP exposed). For full protection use TUN mode.'**
   String get vpnModeProxyDesc;
+
+  /// No description provided for @proxyAppsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Apps that ignore the system proxy — Telegram desktop & its calls, CLI tools — only ride the tunnel in TUN mode.'**
+  String get proxyAppsHint;
 
   /// No description provided for @vpnModeTunDesc.
   ///
@@ -631,12 +775,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Drop a QR or config file, paste a share link, or open a file — then tap connect.'**
   String get onboardBody;
-
-  /// No description provided for @onboardAdd.
-  ///
-  /// In en, this message translates to:
-  /// **'Add a server'**
-  String get onboardAdd;
 
   /// No description provided for @setupTitle.
   ///
@@ -884,6 +1022,18 @@ abstract class AppLocalizations {
   /// **'Update available: {version}'**
   String updateAvailable(String version);
 
+  /// No description provided for @updateNow.
+  ///
+  /// In en, this message translates to:
+  /// **'Update'**
+  String get updateNow;
+
+  /// No description provided for @updateBannerHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Open the release page to download the new version.'**
+  String get updateBannerHint;
+
   /// No description provided for @serverGenChainToggle.
   ///
   /// In en, this message translates to:
@@ -1016,10 +1166,88 @@ abstract class AppLocalizations {
   /// **'Down'**
   String get vDown;
 
+  /// No description provided for @serverDiagRun.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnose my server'**
+  String get serverDiagRun;
+
+  /// No description provided for @serverDiagTunHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Disconnect (or use proxy mode) to test — TUN captures the probe'**
+  String get serverDiagTunHint;
+
+  /// No description provided for @serverDiagHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Probes your selected server raw (bypassing the tunnel) to show where the connection breaks here — for when it works on Wi-Fi but not on mobile.'**
+  String get serverDiagHint;
+
+  /// No description provided for @serverDiagHeader.
+  ///
+  /// In en, this message translates to:
+  /// **'My server(s)'**
+  String get serverDiagHeader;
+
+  /// No description provided for @serverDiagNone.
+  ///
+  /// In en, this message translates to:
+  /// **'Select a server first.'**
+  String get serverDiagNone;
+
+  /// No description provided for @serverDiagCopy.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy report'**
+  String get serverDiagCopy;
+
+  /// No description provided for @serverDiagCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostic report copied'**
+  String get serverDiagCopied;
+
+  /// No description provided for @svReachableL4.
+  ///
+  /// In en, this message translates to:
+  /// **'reaches (L4 OK)'**
+  String get svReachableL4;
+
+  /// No description provided for @svServerBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'IP/port blocked'**
+  String get svServerBlocked;
+
+  /// No description provided for @svWhitelist.
+  ///
+  /// In en, this message translates to:
+  /// **'whitelist — foreign dark'**
+  String get svWhitelist;
+
+  /// No description provided for @svUdpInconclusive.
+  ///
+  /// In en, this message translates to:
+  /// **'UDP — can\'t probe'**
+  String get svUdpInconclusive;
+
+  /// No description provided for @svDnsInconclusive.
+  ///
+  /// In en, this message translates to:
+  /// **'DNS unclear — can\'t verify'**
+  String get svDnsInconclusive;
+
+  /// No description provided for @svOffline.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline'**
+  String get svOffline;
+
   /// No description provided for @tlsFpTitle.
   ///
   /// In en, this message translates to:
-  /// **'TLS fingerprint (uTLS)'**
+  /// **'Browser fingerprint'**
   String get tlsFpTitle;
 
   /// No description provided for @tlsFpDesc.
@@ -1298,11 +1526,347 @@ abstract class AppLocalizations {
   /// **'process.exe'**
   String get splitTunnelHint;
 
+  /// No description provided for @splitCommonApps.
+  ///
+  /// In en, this message translates to:
+  /// **'Common apps:'**
+  String get splitCommonApps;
+
   /// No description provided for @splitTunnelEmpty.
   ///
   /// In en, this message translates to:
   /// **'None'**
   String get splitTunnelEmpty;
+
+  /// No description provided for @tunOnlyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Works only in TUN mode.'**
+  String get tunOnlyHint;
+
+  /// No description provided for @customRulesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom routing rules'**
+  String get customRulesTitle;
+
+  /// No description provided for @customRulesDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Force specific destinations through the tunnel, keep them direct, or block them. These win over Smart routing. Match a domain (and its sub-domains), an exact host, or an IP/CIDR.'**
+  String get customRulesDesc;
+
+  /// No description provided for @customRulesEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No rules — Smart routing decides everything'**
+  String get customRulesEmpty;
+
+  /// No description provided for @customRulesValueHint.
+  ///
+  /// In en, this message translates to:
+  /// **'openai.com  or  1.2.3.4/24'**
+  String get customRulesValueHint;
+
+  /// No description provided for @transportBlockedWarn.
+  ///
+  /// In en, this message translates to:
+  /// **'This transport (e.g. plain WireGuard / Shadowsocks) is widely blocked in Russia — prefer Reality, Hysteria2 or XHTTP.'**
+  String get transportBlockedWarn;
+
+  /// No description provided for @fakeIpTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Faster DNS (TUN)'**
+  String get fakeIpTitle;
+
+  /// No description provided for @fakeIpDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Answer apps instantly with a placeholder address and resolve the real one at the exit — cuts first-load lag in TUN mode and avoids DNS leaks. Experimental; turn off if a site won\'t open.'**
+  String get fakeIpDesc;
+
+  /// No description provided for @advancedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Expert transport'**
+  String get advancedTitle;
+
+  /// No description provided for @advancedDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Expert transport knobs. Leave default unless you know you need them.'**
+  String get advancedDesc;
+
+  /// No description provided for @tunStackTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'TUN network stack'**
+  String get tunStackTitle;
+
+  /// No description provided for @tunStackDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'gVisor is the safe default; system/mixed lower overhead but lean on the OS stack.'**
+  String get tunStackDesc;
+
+  /// No description provided for @muxProtoTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Multiplex protocol (needs multiplex on)'**
+  String get muxProtoTitle;
+
+  /// No description provided for @muxPaddingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Multiplex padding'**
+  String get muxPaddingTitle;
+
+  /// No description provided for @muxPaddingDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Pad multiplexed streams to hide their sizes.'**
+  String get muxPaddingDesc;
+
+  /// No description provided for @echTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Encrypted ClientHello (ECH)'**
+  String get echTitle;
+
+  /// No description provided for @echDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide the TLS server name on non-Reality nodes. Needs server ECH support — turn off if a node won\'t connect.'**
+  String get echDesc;
+
+  /// No description provided for @ecsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'DNS Client Subnet (ECS)'**
+  String get ecsTitle;
+
+  /// No description provided for @ecsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Send resolvers a subnet for better CDN locality. Empty = off.'**
+  String get ecsDesc;
+
+  /// No description provided for @ecsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'e.g. 1.2.3.0/24'**
+  String get ecsHint;
+
+  /// No description provided for @ecsInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid subnet — use a form like 1.2.3.0/24'**
+  String get ecsInvalid;
+
+  /// No description provided for @tfoTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'TCP Fast Open'**
+  String get tfoTitle;
+
+  /// No description provided for @tfoDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Saves ~1 RTT on connect. Off by default — can break some servers and mobile-operator paths in Russia.'**
+  String get tfoDesc;
+
+  /// No description provided for @mptcpTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Multipath TCP'**
+  String get mptcpTitle;
+
+  /// No description provided for @mptcpDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Use multiple network paths when the server supports it. Advanced.'**
+  String get mptcpDesc;
+
+  /// No description provided for @shareImportTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Imported shared setup'**
+  String get shareImportTitle;
+
+  /// No description provided for @shareApplySettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply the sender\'s protection settings'**
+  String get shareApplySettings;
+
+  /// No description provided for @shareApplySettingsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'DPI bypass, per-app routing and rules from the share — only if you trust the sender.'**
+  String get shareApplySettingsDesc;
+
+  /// No description provided for @shareAutoUpdateNote.
+  ///
+  /// In en, this message translates to:
+  /// **'This profile auto-updates from the sender\'s link.'**
+  String get shareAutoUpdateNote;
+
+  /// No description provided for @shareTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Share'**
+  String get shareTitle;
+
+  /// No description provided for @shareForAnyClient.
+  ///
+  /// In en, this message translates to:
+  /// **'For any app'**
+  String get shareForAnyClient;
+
+  /// No description provided for @shareForAnyClientDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard links any VPN client can import — servers only, no settings.'**
+  String get shareForAnyClientDesc;
+
+  /// No description provided for @shareWithSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'With my settings'**
+  String get shareWithSettings;
+
+  /// No description provided for @shareWithSettingsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Our app only — also shares your DPI bypass + routing setup.'**
+  String get shareWithSettingsDesc;
+
+  /// No description provided for @shareCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Link copied to clipboard'**
+  String get shareCopied;
+
+  /// No description provided for @shareCopyLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy link'**
+  String get shareCopyLink;
+
+  /// No description provided for @shareNothing.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing to share yet — add a server first.'**
+  String get shareNothing;
+
+  /// No description provided for @shareNoUniversal.
+  ///
+  /// In en, this message translates to:
+  /// **'These profiles are whole configs — standard links can\'t carry them. Use \"With my settings\" instead.'**
+  String get shareNoUniversal;
+
+  /// No description provided for @customRulesInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid domain or IP — not added'**
+  String get customRulesInvalid;
+
+  /// No description provided for @customRulesLiveNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Changes apply immediately and briefly reconnect an active tunnel.'**
+  String get customRulesLiveNote;
+
+  /// No description provided for @ruleFieldDomainSuffix.
+  ///
+  /// In en, this message translates to:
+  /// **'Domain'**
+  String get ruleFieldDomainSuffix;
+
+  /// No description provided for @ruleFieldDomain.
+  ///
+  /// In en, this message translates to:
+  /// **'Exact host'**
+  String get ruleFieldDomain;
+
+  /// No description provided for @ruleFieldIpCidr.
+  ///
+  /// In en, this message translates to:
+  /// **'IP / CIDR'**
+  String get ruleFieldIpCidr;
+
+  /// No description provided for @ruleActionProxy.
+  ///
+  /// In en, this message translates to:
+  /// **'Proxy'**
+  String get ruleActionProxy;
+
+  /// No description provided for @ruleActionDirect.
+  ///
+  /// In en, this message translates to:
+  /// **'Direct'**
+  String get ruleActionDirect;
+
+  /// No description provided for @ruleActionBlock.
+  ///
+  /// In en, this message translates to:
+  /// **'Block'**
+  String get ruleActionBlock;
+
+  /// No description provided for @webdavTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Cloud sync (WebDAV)'**
+  String get webdavTitle;
+
+  /// No description provided for @webdavDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Back up and sync your profiles to your own WebDAV cloud (Nextcloud, Koofr, box.com, …). Enter the full file URL. The password is stored locally on this device.'**
+  String get webdavDesc;
+
+  /// No description provided for @webdavUrlHint.
+  ///
+  /// In en, this message translates to:
+  /// **'https://dav.example.com/vpn/profiles.json'**
+  String get webdavUrlHint;
+
+  /// No description provided for @webdavUserLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Username'**
+  String get webdavUserLabel;
+
+  /// No description provided for @webdavPassLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Password'**
+  String get webdavPassLabel;
+
+  /// No description provided for @webdavBackup.
+  ///
+  /// In en, this message translates to:
+  /// **'Back up'**
+  String get webdavBackup;
+
+  /// No description provided for @webdavRestore.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore'**
+  String get webdavRestore;
+
+  /// No description provided for @webdavBackedUp.
+  ///
+  /// In en, this message translates to:
+  /// **'Profiles backed up to cloud'**
+  String get webdavBackedUp;
+
+  /// No description provided for @syncError.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync error'**
+  String get syncError;
 
   /// No description provided for @brutalTitle.
   ///
@@ -1352,10 +1916,22 @@ abstract class AppLocalizations {
   /// **'e.g. 1.1.1.1 or dns.google'**
   String get dnsHint;
 
+  /// No description provided for @dnsInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a DNS server address — an IP or host, not a URL.'**
+  String get dnsInvalid;
+
+  /// No description provided for @dnsApplyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Press Enter to apply while connected.'**
+  String get dnsApplyHint;
+
   /// No description provided for @killSwitchTitle.
   ///
   /// In en, this message translates to:
-  /// **'TUN kill-switch (experimental)'**
+  /// **'Block on drop (TUN)'**
   String get killSwitchTitle;
 
   /// No description provided for @killSwitchDesc.

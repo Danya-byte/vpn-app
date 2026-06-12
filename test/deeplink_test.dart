@@ -26,6 +26,13 @@ void main() {
         'https://e.com/s');
   });
 
+  test('vpn://share bundle is returned WHOLE (not scheme-stripped)', () {
+    // The bundle carries its payload in `?d=`, not `?url=`; the generic unwrap
+    // would strip the scheme and break decodeBundle, so it must pass untouched.
+    const bundle = 'vpn://share?d=eyJ2IjoxLCJub2RlcyI6W119';
+    expect(importablePayload(bundle), bundle);
+  });
+
   test('clash://install-config?url= unwraps to the sub URL', () {
     expect(
       importablePayload('clash://install-config?url=https%3A%2F%2Fe.com%2Fsub'),

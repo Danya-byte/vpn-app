@@ -51,7 +51,46 @@ class AppLocalizationsRu extends AppLocalizations {
   String get profiles => 'Профили';
 
   @override
-  String get profilesEmpty => 'Пусто. Вставь ссылку или подписку ниже.';
+  String get profilesEmpty =>
+      'Пока нет серверов. Вставь ссылку, отсканируй QR или открой файл.';
+
+  @override
+  String get clipboardOfferText => 'В буфере обмена — ссылка на сервер';
+
+  @override
+  String fastestServer(String tag) {
+    return 'Быстрейший: $tag';
+  }
+
+  @override
+  String get noReachableServer => 'Отсюда ни один сервер недоступен';
+
+  @override
+  String get diagDesyncOfferText =>
+      'Эти сайты режет DPI по имени сайта — разблокировка без сервера может их открыть.';
+
+  @override
+  String get diagDesyncOfferAction => 'Включить обход без сервера';
+
+  @override
+  String get diagDesyncOfferDone => 'Обход DPI без сервера включён';
+
+  @override
+  String get renameAction => 'Переименовать';
+
+  @override
+  String get renameInvalid => 'Имя пустое или уже занято';
+
+  @override
+  String get hardNetworkCtaText =>
+      'Не подключается? Мобильные операторы режут жёстче Wi-Fi.';
+
+  @override
+  String get hardNetworkCtaAction => 'Сделать чтоб работало';
+
+  @override
+  String get hardNetworkCtaDone =>
+      'Режим жёсткой сети включён — переподключаюсь';
 
   @override
   String get noProfile => 'Нет профиля';
@@ -211,6 +250,46 @@ class AppLocalizationsRu extends AppLocalizations {
       'Дробит TLS-рукопожатие против DPI по SNI. Чуть медленнее.';
 
   @override
+  String get maxResistTitle => 'Режим жёсткой сети (моб. оператор)';
+
+  @override
+  String get maxResistDesc =>
+      'Включай, когда по Wi-Fi работает, а по мобильному оператору — нет: форсирует фрагментацию и держит каскад выживающих транспортов.';
+
+  @override
+  String get desyncTitle => 'Разблокировка без сервера';
+
+  @override
+  String get desyncDesc =>
+      'Открывает тротлящиеся сайты (YouTube, Discord, Rutracker) без сервера. Нужны права администратора. Не помогает при IP-блоке (Telegram) — там нужен сервер.';
+
+  @override
+  String get desyncActive => 'Обход DPI активен';
+
+  @override
+  String get desyncNeedsAdmin =>
+      'Нужен администратор — перезапусти с правами, чтобы загрузить драйвер обхода.';
+
+  @override
+  String get desyncMissing =>
+      'Движок не установлен — положи winws.exe + WinDivert в core\\windows.';
+
+  @override
+  String get desyncIdle => 'Включится при подключении.';
+
+  @override
+  String get desyncStrategyLabel => 'Метод';
+
+  @override
+  String get desyncStratFakeSplit => 'Сплит+фейк';
+
+  @override
+  String get desyncStratFakeDisorder => 'Дизордер';
+
+  @override
+  String get desyncStratSplit => 'Сплит';
+
+  @override
   String get autoFailoverTitle => 'Авто-фейловер';
 
   @override
@@ -241,6 +320,10 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get vpnModeProxyDesc =>
       'Через туннель идут только браузеры и прокси-приложения — без прав админа. Остальные приложения и их DNS идут НАПРЯМУЮ (реальный IP виден). Для полной защиты используйте режим TUN.';
+
+  @override
+  String get proxyAppsHint =>
+      'Приложения, игнорящие системный прокси (Telegram-десктоп и его звонки, CLI-утилиты), идут через туннель только в режиме TUN.';
 
   @override
   String get vpnModeTunDesc =>
@@ -295,9 +378,6 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get onboardBody =>
       'Бросьте QR или файл конфига, вставьте ссылку или откройте файл — затем нажмите подключение.';
-
-  @override
-  String get onboardAdd => 'Добавить сервер';
 
   @override
   String get setupTitle => 'Выберите защиту';
@@ -452,6 +532,13 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
+  String get updateNow => 'Обновить';
+
+  @override
+  String get updateBannerHint =>
+      'Откроется страница релиза для загрузки новой версии.';
+
+  @override
   String get serverGenChainToggle => 'Цепочка через реле в РФ (2 VPS)';
 
   @override
@@ -523,11 +610,51 @@ class AppLocalizationsRu extends AppLocalizations {
   String get vDown => 'Недоступен';
 
   @override
-  String get tlsFpTitle => 'TLS-фингерпринт (uTLS)';
+  String get serverDiagRun => 'Проверить мой сервер';
 
   @override
-  String get tlsFpDesc =>
-      'Маскировка TLS-рукопожатия под этот браузер. «random» — ротация реальных браузеров на каждом соединении.';
+  String get serverDiagTunHint =>
+      'Отключитесь (или режим прокси) — в TUN проба идёт через тоннель';
+
+  @override
+  String get serverDiagHint =>
+      'Пингует выбранный сервер напрямую (мимо туннеля) и показывает, на каком слое рвётся здесь — для случая «по Wi-Fi работает, по мобильной нет».';
+
+  @override
+  String get serverDiagHeader => 'Мои серверы';
+
+  @override
+  String get serverDiagNone => 'Сначала выбери сервер.';
+
+  @override
+  String get serverDiagCopy => 'Скопировать отчёт';
+
+  @override
+  String get serverDiagCopied => 'Отчёт диагностики скопирован';
+
+  @override
+  String get svReachableL4 => 'доходит (L4 ОК)';
+
+  @override
+  String get svServerBlocked => 'IP/порт заблокирован';
+
+  @override
+  String get svWhitelist => 'whitelist — иностр. темно';
+
+  @override
+  String get svUdpInconclusive => 'UDP — не проверить';
+
+  @override
+  String get svDnsInconclusive => 'DNS неясен — не проверить';
+
+  @override
+  String get svOffline => 'Нет сети';
+
+  @override
+  String get tlsFpTitle => 'Отпечаток браузера';
+
+  @override
+  String get tlsFpDesc => 'Маскирует соединение под обычный браузер.';
 
   @override
   String get muxTitle => 'Мультиплекс (mux)';
@@ -684,7 +811,192 @@ class AppLocalizationsRu extends AppLocalizations {
   String get splitTunnelHint => 'процесс.exe';
 
   @override
+  String get splitCommonApps => 'Частые приложения:';
+
+  @override
   String get splitTunnelEmpty => 'Пусто';
+
+  @override
+  String get tunOnlyHint => 'Работает только в режиме TUN.';
+
+  @override
+  String get customRulesTitle => 'Свои правила маршрутизации';
+
+  @override
+  String get customRulesDesc =>
+      'Принудительно гнать конкретные адреса через туннель, напрямую или блокировать. Эти правила важнее «умного» режима. Совпадение по домену (и поддоменам), точному хосту или IP/CIDR.';
+
+  @override
+  String get customRulesEmpty => 'Правил нет — всё решает «умный» режим';
+
+  @override
+  String get customRulesValueHint => 'openai.com  или  1.2.3.4/24';
+
+  @override
+  String get transportBlockedWarn =>
+      'Этот транспорт (напр. чистый WireGuard / Shadowsocks) массово блокируется в РФ — лучше Reality, Hysteria2 или XHTTP.';
+
+  @override
+  String get fakeIpTitle => 'Быстрый DNS (TUN)';
+
+  @override
+  String get fakeIpDesc =>
+      'Ускоряет первую загрузку и не светит DNS. Экспериментально — выключи, если сайт не открывается.';
+
+  @override
+  String get advancedTitle => 'Транспорт (эксперт)';
+
+  @override
+  String get advancedDesc =>
+      'Экспертные кнобы транспорта. Не трогай без необходимости.';
+
+  @override
+  String get tunStackTitle => 'Сетевой стек TUN';
+
+  @override
+  String get tunStackDesc =>
+      'gVisor — безопасный по умолчанию; system/mixed легче, но опираются на стек ОС.';
+
+  @override
+  String get muxProtoTitle => 'Протокол мультиплекса (нужен включённый mux)';
+
+  @override
+  String get muxPaddingTitle => 'Паддинг мультиплекса';
+
+  @override
+  String get muxPaddingDesc =>
+      'Добивает мультиплекс-потоки, скрывая их размеры.';
+
+  @override
+  String get echTitle => 'Шифрование ClientHello (ECH)';
+
+  @override
+  String get echDesc =>
+      'Скрывает TLS-имя сервера на не-Reality узлах. Нужна поддержка ECH на сервере — выключи, если узел не подключается.';
+
+  @override
+  String get ecsTitle => 'Подсеть клиента в DNS (ECS)';
+
+  @override
+  String get ecsDesc =>
+      'Сообщает резолверам подсеть для лучшей близости CDN. Пусто = выкл.';
+
+  @override
+  String get ecsHint => 'напр. 1.2.3.0/24';
+
+  @override
+  String get ecsInvalid => 'Неверная подсеть — формат как 1.2.3.0/24';
+
+  @override
+  String get tfoTitle => 'TCP Fast Open';
+
+  @override
+  String get tfoDesc =>
+      'Экономит ~1 RTT на подключении. По умолчанию выкл — может ломать часть серверов и операторские пути в РФ.';
+
+  @override
+  String get mptcpTitle => 'Multipath TCP';
+
+  @override
+  String get mptcpDesc =>
+      'Использует несколько сетевых путей, если сервер поддерживает. Продвинутое.';
+
+  @override
+  String get shareImportTitle => 'Импортирован чужой набор';
+
+  @override
+  String get shareApplySettings => 'Применить настройки защиты отправителя';
+
+  @override
+  String get shareApplySettingsDesc =>
+      'Обход DPI, маршруты по приложениям и правила из ссылки — только если доверяешь отправителю.';
+
+  @override
+  String get shareAutoUpdateNote =>
+      'Этот профиль авто-обновляется по ссылке отправителя.';
+
+  @override
+  String get shareTitle => 'Поделиться';
+
+  @override
+  String get shareForAnyClient => 'Для любого приложения';
+
+  @override
+  String get shareForAnyClientDesc =>
+      'Стандартные ссылки для любого VPN-клиента — только серверы, без настроек.';
+
+  @override
+  String get shareWithSettings => 'С моими настройками';
+
+  @override
+  String get shareWithSettingsDesc =>
+      'Только наше приложение — делится и обходом DPI + маршрутами.';
+
+  @override
+  String get shareCopied => 'Ссылка скопирована в буфер';
+
+  @override
+  String get shareCopyLink => 'Копировать ссылку';
+
+  @override
+  String get shareNothing => 'Пока нечего шарить — сначала добавь сервер.';
+
+  @override
+  String get shareNoUniversal =>
+      'Эти профили — целые конфиги, стандартные ссылки их не передают. Используй «С моими настройками».';
+
+  @override
+  String get customRulesInvalid => 'Неверный домен или IP — не добавлено';
+
+  @override
+  String get customRulesLiveNote =>
+      'Изменения применяются сразу и ненадолго переподключают активный туннель.';
+
+  @override
+  String get ruleFieldDomainSuffix => 'Домен';
+
+  @override
+  String get ruleFieldDomain => 'Точный хост';
+
+  @override
+  String get ruleFieldIpCidr => 'IP / CIDR';
+
+  @override
+  String get ruleActionProxy => 'Прокси';
+
+  @override
+  String get ruleActionDirect => 'Напрямую';
+
+  @override
+  String get ruleActionBlock => 'Блок';
+
+  @override
+  String get webdavTitle => 'Облачная синхронизация (WebDAV)';
+
+  @override
+  String get webdavDesc =>
+      'Резервная копия и синхронизация профилей в твоё облако WebDAV (Nextcloud, Koofr, box.com, …). Укажи полный URL файла. Пароль хранится локально на этом устройстве.';
+
+  @override
+  String get webdavUrlHint => 'https://dav.example.com/vpn/profiles.json';
+
+  @override
+  String get webdavUserLabel => 'Логин';
+
+  @override
+  String get webdavPassLabel => 'Пароль';
+
+  @override
+  String get webdavBackup => 'Выгрузить';
+
+  @override
+  String get webdavRestore => 'Восстановить';
+
+  @override
+  String get webdavBackedUp => 'Профили выгружены в облако';
+
+  @override
+  String get syncError => 'Ошибка синхронизации';
 
   @override
   String get brutalTitle => 'Скорость Hysteria2 (Brutal)';
@@ -713,11 +1025,17 @@ class AppLocalizationsRu extends AppLocalizations {
   String get dnsHint => 'напр. 1.1.1.1 или dns.google';
 
   @override
-  String get killSwitchTitle => 'Kill-switch для TUN (экспериментально)';
+  String get dnsInvalid => 'Введите адрес DNS-сервера — IP или хост, не URL.';
+
+  @override
+  String get dnsApplyHint => 'Нажмите Enter, чтобы применить при подключении.';
+
+  @override
+  String get killSwitchTitle => 'Блокировка при обрыве (TUN)';
 
   @override
   String get killSwitchDesc =>
-      'В режиме TUN ставит фаервол-фенс (Windows Filtering Platform): при падении ядра блокирует ВЕСЬ трафик кроме туннеля — без утечки в открытую при реконнекте. Снимается автоматически при выходе из приложения, заблокировать сеть не может. Экспериментально: проверь в бою, прежде чем полагаться.';
+      'Если туннель упал — блокирует весь трафик кроме VPN, реальный IP не утечёт. Снимается при выходе. Экспериментально.';
 
   @override
   String get settingsAdvanced => 'Дополнительно';

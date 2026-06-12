@@ -453,9 +453,19 @@ LRESULT CALLBACK ElevatedDropProc(HWND hwnd, UINT msg, WPARAM wparam,
 void RelaunchElevated() {
   wchar_t path[MAX_PATH];
   if (GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) return;
+  // Working directory = the exe's own folder. A "runas" elevation otherwise gives
+  // the new process CWD=system32, and in a dev/DEBUG layout (cores live in the
+  // project's core/, NOT beside build\...\Debug\vpn_app.exe) CorePaths' CWD
+  // walk-up then can't reach them → coreMissing → the elevated copy silently fails
+  // to start the tunnel. Pinning CWD to the exe dir lets the walk-up find the dev
+  // core/ AND keeps a release exe's adjacent core/ resolvable.
+  wchar_t dir[MAX_PATH];
+  wcsncpy_s(dir, MAX_PATH, path, _TRUNCATE);
+  if (wchar_t* slash = wcsrchr(dir, L'\\')) *slash = L'\0';
   SHELLEXECUTEINFOW sei = {sizeof(sei)};
   sei.lpVerb = L"runas";
   sei.lpFile = path;
+  sei.lpDirectory = dir;
   // Tell the elevated copy this is a deliberate relaunch so it bypasses the
   // single-instance guard (otherwise it sees THIS still-alive instance and
   // exits → "restart as admin does nothing").

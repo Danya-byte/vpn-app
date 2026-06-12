@@ -75,6 +75,27 @@ void main() {
     expect(jsonDecode(f.readAsStringSync())['vpnMode'], 'tun');
   });
 
+  test('insecure-node consent persists per tag, asked ONCE not every connect (#4)',
+      () {
+    final c = ProviderContainer();
+    addTearDown(c.dispose);
+    final s = c.read(settingsProvider.notifier);
+    expect(c.read(settingsProvider).insecureAccepted, isEmpty);
+    s.acceptInsecure('🌍 VPN');
+    s.acceptInsecure('🌍 VPN'); // idempotent
+    expect(c.read(settingsProvider).insecureAccepted, {'🌍 VPN'});
+    // Persisted...
+    expect(
+        (jsonDecode(File('${tmp.path}${Platform.pathSeparator}settings.json')
+            .readAsStringSync())['insecureAccepted'] as List),
+        contains('🌍 VPN'));
+    // ...and reloaded into a fresh controller (survives a relaunch).
+    final c2 = ProviderContainer();
+    addTearDown(c2.dispose);
+    expect(c2.read(settingsProvider).insecureAccepted.contains('🌍 VPN'), isTrue);
+    expect(c2.read(settingsProvider).insecureAccepted.contains('other'), isFalse);
+  });
+
   test('unknown enum in settings.json defaults only that field (not all)', () {
     File('${tmp.path}${Platform.pathSeparator}settings.json').writeAsStringSync(
         jsonEncode({'mode': 'from_the_future', 'antiDpi': true}));
@@ -83,6 +104,48 @@ void main() {
     final s = c.read(settingsProvider);
     expect(s.mode, RouteMode.smart); // bad enum -> default
     expect(s.antiDpi, isTrue); // other fields preserved
+  });
+
+  test('winws desync toggle + strategy persist; junk strategy clamps to default',
+      () {
+    final c = ProviderContainer();
+    addTearDown(c.dispose);
+    final s = c.read(settingsProvider.notifier);
+    s.setWinwsDesync(true);
+    s.setDesyncStrategy('fake_disorder');
+    s.setDesyncStrategy('totally-bogus'); // rejected — stays on the valid one
+    expect(c.read(settingsProvider).winwsDesync, isTrue);
+    expect(c.read(settingsProvider).desyncStrategy, 'fake_disorder');
+    // Reload: persisted + survives a relaunch.
+    final c2 = ProviderContainer();
+    addTearDown(c2.dispose);
+    expect(c2.read(settingsProvider).winwsDesync, isTrue);
+    expect(c2.read(settingsProvider).desyncStrategy, 'fake_disorder');
+    // A hostile/corrupt settings.json with a junk strategy must NOT be trusted —
+    // winws would otherwise be handed an unvalidated method string.
+    File('${tmp.path}${Platform.pathSeparator}settings.json').writeAsStringSync(
+        jsonEncode({'winwsDesync': true, 'desyncStrategy': 'rm -rf'}));
+    final c3 = ProviderContainer();
+    addTearDown(c3.dispose);
+    expect(c3.read(settingsProvider).desyncStrategy, 'fake_split'); // default
+  });
+
+  test('maxResistance ("hard network") persists across a relaunch (was dropped '
+      'from _save → silently reset to OFF every launch)', () {
+    final c = ProviderContainer();
+    addTearDown(c.dispose);
+    expect(c.read(settingsProvider).maxResistance, isFalse); // default off
+    c.read(settingsProvider.notifier).setMaxResistance(true);
+    expect(c.read(settingsProvider).maxResistance, isTrue);
+    // Persisted to disk...
+    expect(
+        jsonDecode(File('${tmp.path}${Platform.pathSeparator}settings.json')
+            .readAsStringSync())['maxResistance'],
+        isTrue);
+    // ...and survives a relaunch (the bug: it was read on load but never written).
+    final c2 = ProviderContainer();
+    addTearDown(c2.dispose);
+    expect(c2.read(settingsProvider).maxResistance, isTrue);
   });
 
   test('configs that differ only in key order dedupe on re-import (C9)', () {

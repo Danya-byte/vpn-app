@@ -89,6 +89,22 @@ class XrayConfig {
         },
       };
 
+  /// Deep-strip control chars (\x00-\x1f) from every key and string value of the
+  /// untrusted XHTTP `extra` blob. Numbers/bools pass through; nested maps/lists
+  /// are walked. Keeps the server's legitimate sc*/xPadding/xmux tuning intact
+  /// (none of it legitimately contains control bytes).
+  static dynamic _sanitizeExtra(dynamic v) {
+    String clean(String s) => s.replaceAll(RegExp(r'[\x00-\x1f]'), '');
+    if (v is String) return clean(v);
+    if (v is Map) {
+      return {
+        for (final e in v.entries) clean('${e.key}'): _sanitizeExtra(e.value),
+      };
+    }
+    if (v is List) return v.map(_sanitizeExtra).toList();
+    return v;
+  }
+
   static Map<String, dynamic> _stream(Map o) {
     final stream = <String, dynamic>{'network': 'tcp'};
 
@@ -96,12 +112,27 @@ class XrayConfig {
     final trType = tr?['type']?.toString();
     if (trType == 'xhttp' || trType == 'splithttp') {
       stream['network'] = 'xhttp';
-      // Honor the link's xhttp `mode` (packet-up / stream-up / stream-one) — the
-      // sub-16KB-freeze lever under ТСПУ — instead of always 'auto'.
       final mode = tr!['mode']?.toString();
-      final x = <String, dynamic>{
-        'mode': (mode != null && mode.isNotEmpty) ? mode : 'auto'
-      };
+      final x = <String, dynamic>{};
+      // Merge the server's XHTTP tuning blob FIRST (sc* split sizes / xPadding /
+      // xmux — the sub-16KB-freeze levers under ТСПУ), then let the link's explicit
+      // mode/path/host take precedence. We relay the server's chosen split rather
+      // than forcing our own cap (which would just add overhead / cost throughput).
+      final extra = tr['extra'];
+      // The blob is UNTRUSTED (jsonDecode'd from a share-link param / imported
+      // config): the upstream control-char scrub ran on the RAW string, so JSON
+      // escapes (\r\n) materialize into real control bytes only here — sanitize
+      // the decoded values too, or they reach xray's XHTTP wire headers.
+      if (extra is Map) {
+        x.addAll((_sanitizeExtra(extra) as Map).cast<String, dynamic>());
+      }
+      final mergedMode =
+          (mode != null && mode.isNotEmpty) ? mode : '${x['mode'] ?? 'auto'}';
+      // xray expects this exact string enum; a type-confused / out-of-enum value
+      // from `extra` ({"mode":5}) fails `xray run -test` → the member is silently
+      // pruned, turning a valid XHTTP node dead. Clamp to the enum.
+      const modes = {'auto', 'packet-up', 'stream-up', 'stream-one'};
+      x['mode'] = modes.contains(mergedMode) ? mergedMode : 'auto';
       if (tr['path'] != null) x['path'] = tr['path'];
       if (tr['host'] != null) x['host'] = tr['host'];
       stream['xhttpSettings'] = x;

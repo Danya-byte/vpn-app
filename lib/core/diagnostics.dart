@@ -41,6 +41,45 @@ class SiteResult {
   bool get tunnelRescued => direct != BlockVerdict.ok && tunnelOk == true;
 }
 
+/// One proxy server endpoint to stage-probe.
+class ServerEndpoint {
+  const ServerEndpoint(
+      {required this.tag,
+      required this.host,
+      required this.port,
+      required this.udp});
+  final String tag;
+  final String host;
+  final int port;
+  final bool udp; // QUIC/UDP (hysteria2 / tuic / wireguard) — no passive SYN probe
+}
+
+/// Where a connection to YOUR server breaks on the current network — the staged
+/// verdict that turns "doesn't work on mobile" into a named layer.
+enum ServerVerdict {
+  reachableL4, // TCP to server:port OK — IP/port NOT blocked (proxy still needs a handshake)
+  serverBlocked, // foreign reachable but this server's SYN was dropped → IP/port block
+  whitelistCollapse, // no foreign reachable at all → state allowlist (mobile shutdown)
+  udpInconclusive, // QUIC/UDP — can't passively confirm; mobile throttles UDP/443
+  dnsInconclusive, // hostname resolved via the (interceptable) system resolver — a connect "success" may be the operator's blockpage, not the server
+  offline, // the local network itself is down (Wi-Fi off / airplane) — not censorship
+}
+
+class ServerProbeResult {
+  const ServerProbeResult({
+    required this.endpoint,
+    required this.controlReachable,
+    required this.serverReachable,
+    required this.verdict,
+    this.tcpMs,
+  });
+  final ServerEndpoint endpoint;
+  final bool controlReachable;
+  final bool? serverReachable; // null = UDP / inconclusive
+  final int? tcpMs;
+  final ServerVerdict verdict;
+}
+
 /// Built-in connectivity / censorship diagnostics. Probes a curated set of
 /// Russian control sites + RKN-restricted sites, DIRECT (raw sockets, which
 /// ignore the system proxy) and THROUGH the tunnel, and reports per-layer
@@ -80,6 +119,11 @@ class Diagnostics {
     void Function(SiteResult)? onResult,
     int concurrency = 6,
   }) async {
+    // Fresh blockpage memory PER RUN — the cross-host detector accumulates which
+    // hosts share a system-resolved IP, and a CDN legitimately reusing one edge
+    // IP across runs would otherwise creep past the ≥3 threshold and false-flag
+    // poison on a later run.
+    _disjointIpHosts.clear();
     final targets = [
       for (final w in whitelist) (w.$1, w.$2, false),
       for (final b in blacklist) (b.$1, b.$2, true),
@@ -162,10 +206,54 @@ class Diagnostics {
       final sys = await sysF;
       final doh = await dohF;
       if (sys.isEmpty || doh.isEmpty) return false; // can't tell
-      return sys.intersection(doh).isEmpty; // disjoint = rewritten
+      // STRONG signal #1: the system resolver hands back a stub / sinkhole
+      // (0.0.0.0, loopback, private) that DoH does not — the classic ТСПУ DNS
+      // redirect. Plain "disjoint IPv4 sets" is NOT proof: big geo-balanced CDNs
+      // (Google/Cloudflare/Akamai/Fastly) legitimately return wholly different
+      // edge IPs to the local resolver vs 1.1.1.1's location, so the old
+      // intersection().isEmpty check over-reported normal CDN behaviour as poison.
+      if (sys.any(_looksLikeStub) && !doh.any(_looksLikeStub)) return true;
+      // STRONG signal #2: the PUBLIC-blockpage mode (Rostelecom/MTS) — the ISP
+      // resolver rewrites MANY different blocked hosts to ONE routable blockpage
+      // IP. One disjoint answer is normal CDN behaviour; the SAME system-returned
+      // IP showing up for ≥3 DIFFERENT probed hosts (each disagreeing with DoH)
+      // is not — distinct real sites virtually never share one exact IP across a
+      // whole diagnostic run. The stub check above can't see this mode (the
+      // blockpage IP is public), which left it undetected.
+      if (sys.intersection(doh).isEmpty) {
+        for (final ip in sys) {
+          final hosts = _disjointIpHosts.putIfAbsent(ip, () => <String>{})
+            ..add(host);
+          if (hosts.length >= 3) return true;
+        }
+      } else {
+        // Resolvers agree → any old disjoint markers for this host are stale.
+        for (final hosts in _disjointIpHosts.values) {
+          hosts.remove(host);
+        }
+      }
+      return false;
     } catch (_) {
       return false;
     }
+  }
+
+  // Cross-host blockpage memory: system-resolved IP → the probed hosts it was
+  // returned for while DISAGREEING with DoH. Bounded by the diagnostic site list.
+  static final Map<String, Set<String>> _disjointIpHosts = {};
+
+  // A DNS answer that looks like a censorship stub/sinkhole rather than a real
+  // host: 0.0.0.0, loopback, link-local, or an RFC-1918 private address.
+  static bool _looksLikeStub(String ip) {
+    final a = InternetAddress.tryParse(ip);
+    if (a == null) return false;
+    if (a.isLoopback || a.isLinkLocal) return true;
+    if (a.type != InternetAddressType.IPv4) return false;
+    final b = a.rawAddress;
+    return b[0] == 0 ||
+        b[0] == 10 ||
+        (b[0] == 172 && b[1] >= 16 && b[1] <= 31) ||
+        (b[0] == 192 && b[1] == 168);
   }
 
   static Future<Set<String>> _doh(String host) async {
@@ -208,6 +296,174 @@ class Diagnostics {
     } finally {
       client.close(force: true);
     }
+  }
+
+  // ── Server-connect diagnostic ("works on Wi-Fi, not on mobile") ──────────
+  // The site probes above answer "is a SITE blocked"; this answers the OTHER
+  // question — "why won't MY VPN server connect here?" — by staging the layers a
+  // mobile operator blocks at, the way you'd read a tcpdump but from the client:
+  //   • foreign reachable AT ALL?      no  → state WHITELIST collapse (mobile)
+  //   • this server's IP:port reachable (raw L4, bypassing the tunnel)?
+  //         no  → its IP or PORT is blocked on this network
+  //         yes → L3/L4 is fine; if the VPN still won't connect it's PROTOCOL-
+  //               level DPI (the handshake is killed) — exactly the mobile case
+  //               for plain VLESS / Reality. Note: a raw TCP connect to a real
+  //               host SUCCEEDS even if the proxy is dead, so "reachable" only
+  //               rules OUT an IP/port block; it never confirms the proxy itself.
+  //   • UDP/QUIC (Hysteria2/TUIC/WireGuard) can't be passively SYN-probed, and
+  //     mobile networks throttle UDP/443 hard — reported as inconclusive.
+
+  /// A proxy server endpoint to probe, pulled from a node/config.
+  static List<ServerEndpoint> endpointsOf(Map<String, dynamic> cfg) {
+    const udpTypes = {'hysteria2', 'hysteria', 'tuic', 'wireguard'};
+    final out = <ServerEndpoint>[];
+    void addOutbound(dynamic o) {
+      if (o is! Map) return;
+      final type = o['type']?.toString();
+      final host = o['server']?.toString();
+      final port = (o['server_port'] as num?)?.toInt();
+      if (host == null || host.isEmpty || port == null) return;
+      out.add(ServerEndpoint(
+        tag: (o['tag']?.toString().isNotEmpty ?? false) ? o['tag'].toString() : host,
+        host: host,
+        port: port,
+        udp: udpTypes.contains(type),
+      ));
+    }
+
+    // WireGuard endpoints carry the host under peers[].address, not `server`.
+    void addEndpoint(dynamic e) {
+      if (e is! Map) return;
+      final peers = e['peers'] as List?;
+      final peer = (peers != null && peers.isNotEmpty) ? peers.first : null;
+      if (peer is! Map) return;
+      final host = peer['address']?.toString();
+      final port = (peer['port'] as num?)?.toInt();
+      if (host == null || host.isEmpty || port == null) return;
+      out.add(ServerEndpoint(
+          tag: e['tag']?.toString() ?? host, host: host, port: port, udp: true));
+    }
+
+    for (final o in (cfg['outbounds'] as List?) ?? const []) {
+      addOutbound(o);
+    }
+    for (final e in (cfg['endpoints'] as List?) ?? const []) {
+      addEndpoint(e);
+    }
+    // De-dup by host:port (a pool often repeats one server across transports).
+    // TCP entries first: when the same host:port is exposed over a TCP transport
+    // (vless) AND a UDP one (hysteria2), keep the TCP probe — it yields a real
+    // reachable/blocked verdict where UDP is inconclusive. The old key appended
+    // `:udp`, so the same socket produced two divergent rows.
+    final ordered = [...out]..sort((a, b) => (a.udp ? 1 : 0) - (b.udp ? 1 : 0));
+    final seen = <String>{};
+    return ordered.where((e) => seen.add('${e.host}:${e.port}')).toList();
+  }
+
+  /// Stage-probe ONE server endpoint, raw (bypassing the tunnel). [controlUp] is
+  /// the shared "is any foreign IP reachable" result (computed once per run).
+  static Future<ServerProbeResult> probeServer(
+      ServerEndpoint ep, bool controlUp,
+      {bool localUp = true}) async {
+    bool? reachable;
+    int? ms;
+    var resolverTrusted = true;
+    if (!ep.udp) {
+      // Resolve a hostname via DoH and dial the LITERAL IP — never the captured
+      // system resolver: in TUN a FakeIP 198.18.x answer (or a ТСПУ-poisoned A
+      // record even in proxy mode) would make us probe a synthetic / wrong target
+      // and report a meaningless verdict. An IP host dials as-is; a DoH miss falls
+      // back to the host name (best-effort).
+      var dial = ep.host;
+      if (InternetAddress.tryParse(ep.host) == null) {
+        final ips = await _doh(ep.host);
+        if (ips.isNotEmpty) {
+          dial = ips.first;
+        } else {
+          // DoH miss (1.1.1.1 blocked/poisoned — the censored case): dialing the
+          // hostname resolves via the SYSTEM resolver, whose answer may be the
+          // operator's public blockpage — a connect "success" then proves nothing.
+          // Probe anyway (a refusal/timeout is still meaningful) but downgrade a
+          // success to dnsInconclusive instead of claiming reachableL4.
+          resolverTrusted = false;
+        }
+      }
+      // 8s (under the controller's 9s wrapper): a slow-but-ALIVE server on a
+      // congested mobile uplink shouldn't be mislabelled "IP/PORT BLOCKED" just
+      // because it didn't answer in 5s — only a genuine SYN-drop still times out.
+      final t = await _time(() => Socket.connect(dial, ep.port,
+          timeout: const Duration(seconds: 8)).then((s) => s.destroy()));
+      reachable = t.ok;
+      ms = t.ms;
+    }
+    return ServerProbeResult(
+      endpoint: ep,
+      controlReachable: controlUp,
+      serverReachable: reachable,
+      tcpMs: ms,
+      verdict: verdictFor(
+          controlUp: controlUp,
+          udp: ep.udp,
+          reachable: reachable,
+          localUp: localUp,
+          resolverTrusted: resolverTrusted),
+    );
+  }
+
+  /// The staged verdict — PURE, so the layer logic is unit-tested without sockets.
+  static ServerVerdict verdictFor(
+      {required bool controlUp,
+      required bool udp,
+      bool? reachable,
+      bool localUp = true,
+      bool resolverTrusted = true}) {
+    // No local network at all (Wi-Fi off / airplane) → an OFFLINE state, NOT a
+    // censorship verdict. Without this, a downed adapter looked like "the state
+    // collapsed the network to a whitelist" — a scary RF-specific false alarm.
+    if (!localUp) return ServerVerdict.offline;
+    // The SERVER answering a raw dial is the STRONGEST signal — stronger than the
+    // baked control IPs being blocked (an operator can null-route 8.8.8.8:443 yet
+    // leave the user's own server reachable). So prefer reachableL4 over whitelist.
+    // UNLESS the dial resolved via the interceptable system resolver (DoH miss):
+    // then "connected" may be the operator's blockpage answering, not the server.
+    if (reachable == true) {
+      return resolverTrusted
+          ? ServerVerdict.reachableL4
+          : ServerVerdict.dnsInconclusive;
+    }
+    if (!controlUp) return ServerVerdict.whitelistCollapse;
+    if (udp) return ServerVerdict.udpInconclusive;
+    return ServerVerdict.serverBlocked;
+  }
+
+  /// Is ANY foreign control IP reachable by a raw dial (whitelist gate), and is
+  /// the local network even up? Runs once, shared across the per-server probes.
+  static Future<({bool foreign, bool localUp})> probeNetwork() async {
+    Future<bool> tcp(String h, int p) async {
+      try {
+        final s = await Socket.connect(h, p, timeout: const Duration(seconds: 4));
+        s.destroy();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // localUp = ANY domestic host reachable, not a single one: tying it to just
+    // ya.ru let one flapping/overloaded host read as "network down" and mask a
+    // REAL whitelist collapse as a benign offline state. These big RU sites stay
+    // reachable even under a state IP-allowlist, so any hit = the link is up.
+    const ruHosts = ['ya.ru', 'vk.com', 'mail.ru', 'gosuslugi.ru'];
+    final localResults = await Future.wait([for (final h in ruHosts) tcp(h, 443)]);
+    final localUp = localResults.any((r) => r);
+    var foreign = false;
+    for (final ip in SingBoxConfig.foreignProbeIps) {
+      if (await tcp(ip, 443)) {
+        foreign = true;
+        break;
+      }
+    }
+    return (foreign: foreign, localUp: localUp);
   }
 
   static Future<({bool ok, bool timedOut, int? ms})> _time(

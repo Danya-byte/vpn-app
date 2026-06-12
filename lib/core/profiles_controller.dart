@@ -8,6 +8,7 @@ import 'core_controller.dart';
 import 'profile_store.dart';
 import 'proxy_node.dart';
 import 'share_link.dart';
+import 'share_link_encoder.dart';
 import 'sub_info.dart';
 
 class ProfilesState {
@@ -68,6 +69,12 @@ final profilesProvider =
 class ProfilesController extends Notifier<ProfilesState> {
   bool _disposed = false;
   Timer? _autoRefresh;
+  Timer? _launchRefresh;
+
+  // Is a tunnel currently up? Read (not watched) so this never makes profiles
+  // depend on the core at build time (which would be a provider cycle — the core
+  // already reads profiles). Safe from the post-build timer callbacks.
+  bool _connected() => ref.read(coreControllerProvider).isOn;
 
   @override
   ProfilesState build() {
@@ -76,12 +83,23 @@ class ProfilesController extends Notifier<ProfilesState> {
     ref.onDispose(() {
       _disposed = true;
       _autoRefresh?.cancel();
+      _launchRefresh?.cancel();
     });
     final loaded = ProfileStore.load();
     // Auto-update subscriptions every 6h (Hiddify-style) so dead nodes get
     // swapped out + usage/expiry stays fresh, without the user lifting a finger.
+    // GATED on a live tunnel: in RF the subscription host is reachable only THROUGH
+    // the tunnel, so a fetch while disconnected just fails + wastes a request.
     _autoRefresh = Timer.periodic(const Duration(hours: 6), (_) {
-      if (!_disposed && state.nodes.any((n) => n.source != null)) {
+      if (!_disposed && state.nodes.any((n) => n.source != null) && _connected()) {
+        refreshSubscriptions();
+      }
+    });
+    // Also refresh once shortly after launch IF a tunnel is already up (resume-on-
+    // launch), so you open the app to fresh servers instead of waiting up to 6h.
+    // The source-node check runs FIRST so a sub-less store never reads the core.
+    _launchRefresh = Timer(const Duration(seconds: 12), () {
+      if (!_disposed && state.nodes.any((n) => n.source != null) && _connected()) {
         refreshSubscriptions();
       }
     });
@@ -114,6 +132,25 @@ class ProfilesController extends Notifier<ProfilesState> {
     // subscription info restored, below), else parse links / a base64 sub / a
     // whole config.
     final t = text.trim();
+    // Our own `vpn://share` bundle pasted as TEXT (manual paste dialog / clipboard
+    // button): ShareLink.parseSubscription below doesn't know the scheme and would
+    // report "nothing recognized" — the exact bug a user hit pasting a share link.
+    // Decode it here so EVERY importText caller handles bundles. (The richer
+    // preview + apply-settings flow stays in importDroppedContent for drops/
+    // deeplinks; a manual paste just imports the nodes.)
+    if (t.startsWith('vpn://share')) {
+      final bundle = ShareLinkEncoder.decodeBundle(t);
+      if (bundle != null) {
+        // Honor the bundle's own auto-update subscription URL (same as the
+        // drag/deeplink route does) — else a PASTED share imports the same nodes
+        // but they silently never refresh. Sender SETTINGS stay paste-dropped by
+        // design: applying them is never silent and needs the consent dialog,
+        // which lives on the importDroppedContent route.
+        return importNodes(bundle.nodes,
+            selectFirst: selectFirst,
+            source: source ?? (bundle.autoUpdate ? bundle.subUrl : null));
+      }
+    }
     final store = t.startsWith('{') ? ProfileStore.decode(t) : null;
     final parsed = (store != null && store.nodes.isNotEmpty)
         ? store.nodes
@@ -190,6 +227,66 @@ class ProfilesController extends Notifier<ProfilesState> {
         addedTags: addedTags);
   }
 
+  /// Add already-parsed nodes (e.g. from a decoded `vpn://share` bundle) — same
+  /// content-dedup, unique-tag and persist as [importText], but for ParsedNodes
+  /// that don't need re-parsing. [selectFirst] only auto-selects on a trusted
+  /// path; an untrusted bundle leaves selection to the preview gate (H2). When
+  /// [source] is set the nodes are tagged with it so the 6-hourly refresh keeps
+  /// them fresh.
+  ImportResult importNodes(List<ParsedNode> parsed,
+      {bool selectFirst = false, String? source}) {
+    if (parsed.isEmpty) return const ImportResult(parsed: 0, added: 0);
+    final nodes = [...state.nodes];
+    final byContent = {for (final n in nodes) _contentKey(n): n.tag};
+    final tags = {for (final n in nodes) n.tag};
+    String? firstTag;
+    final addedTags = <String>[];
+    var added = 0;
+    for (final p in parsed) {
+      final existing = byContent[_contentKey(p)];
+      if (existing != null) {
+        firstTag ??= existing;
+        continue;
+      }
+      var tag = p.tag;
+      var i = 2;
+      while (tags.contains(tag)) {
+        tag = '${p.tag} ($i)';
+        i++;
+      }
+      final node = (tag == p.tag && source == null && p.source == null)
+          ? p
+          : ParsedNode(
+              tag: tag,
+              outbound: tag == p.tag
+                  ? p.outbound
+                  : {...p.outbound, if (p.outbound.isNotEmpty) 'tag': tag},
+              config: p.config,
+              source: source ?? p.source,
+            );
+      nodes.add(node);
+      tags.add(tag);
+      byContent[_contentKey(node)] = tag;
+      firstTag ??= tag;
+      addedTags.add(tag);
+      added++;
+    }
+    if (_disposed) {
+      return ImportResult(
+          parsed: parsed.length, added: added, firstTag: firstTag);
+    }
+    state = state.copyWith(
+      nodes: nodes,
+      selected: selectFirst ? (firstTag ?? state.selected) : state.selected,
+    );
+    _persist();
+    return ImportResult(
+        parsed: parsed.length,
+        added: added,
+        firstTag: firstTag,
+        addedTags: addedTags);
+  }
+
   Future<({String body, SubInfo? info})> _fetch(String url) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
@@ -254,6 +351,40 @@ class ProfilesController extends Notifier<ProfilesState> {
     if (ref.read(coreControllerProvider).isOn) {
       ref.read(coreControllerProvider.notifier).restart(reason: 'select node');
     }
+  }
+
+  /// Rename a profile (display name + its outbound tag). No-op if the new name is
+  /// empty, unchanged, or already used by another profile. Renaming a NON-active
+  /// profile is purely cosmetic (no reconnect). Renaming the LIVE-active profile
+  /// does a brief restart — the running config still carries the OLD outbound tag,
+  /// and the latency / active-server readouts now watch the NEW selected tag, so
+  /// without a restart they'd 404 against the core and blank out. Matches the
+  /// select/remove behaviour (which also restart on an active change).
+  /// Returns false when nothing was renamed (empty/unchanged name, name already
+  /// taken, node gone) so the dialog can SAY so instead of silently closing.
+  bool rename(String oldTag, String newTag) {
+    final name = newTag.trim();
+    if (name.isEmpty || name == oldTag) return false;
+    if (state.nodes.any((n) => n.tag == name)) return false; // name taken
+    final renamingActive = state.selectedNode?.tag == oldTag;
+    var found = false;
+    final nodes = state.nodes.map((n) {
+      if (n.tag != oldTag) return n;
+      found = true;
+      final ob = {...n.outbound};
+      if (ob.containsKey('tag')) ob['tag'] = name;
+      return ParsedNode(
+          tag: name, outbound: ob, config: n.config, source: n.source);
+    }).toList();
+    if (!found) return false;
+    state = state.copyWith(
+        nodes: nodes,
+        selected: state.selected == oldTag ? name : state.selected);
+    _persist();
+    if (renamingActive && ref.read(coreControllerProvider).isOn) {
+      ref.read(coreControllerProvider.notifier).restart(reason: 'rename node');
+    }
+    return true;
   }
 
   void remove(String tag) {

@@ -49,6 +49,8 @@ app.*.map.json
 /core/**/*.exe
 /core/**/*.dll
 /core/**/*.srs
+/core/**/*.sys
+/core/**/*.bin
 
 # sing-box cache + any runtime db that lands in the tree (holds live state)
 cache.db

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'proxy_node.dart';
 import 'route_mode.dart';
+import 'route_rule.dart';
 
 /// Builds sing-box configs.
 ///
@@ -154,6 +155,17 @@ class SingBoxConfig {
   /// NEVER emit a remote (RF-blocked) rule-set in a shipping build.
   static bool ruleSetsReady = true;
 
+  /// Advanced transport knobs the controller injects from AppSettings before each
+  /// build (same static-injection pattern as [logLevel]/[dnsServer]). Defaults
+  /// reproduce the prior hardcoded behaviour, so an untouched app is unchanged.
+  static String tunStack = 'gvisor'; // sing-box TUN network stack
+  static String muxProtocol = 'h2mux'; // multiplex carrier when mux is on
+  static int muxStreams = 8; // multiplex max concurrent streams
+  static bool muxPadding = false; // multiplex padding (hide stream sizes)
+  static bool tcpFastOpen = false; // TCP Fast Open on TCP-dial outbounds (advanced)
+  static bool mptcp = false; // Multipath TCP on TCP-dial outbounds (advanced)
+  static String ecsSubnet = ''; // EDNS Client Subnet (e.g. 1.2.3.0/24); '' = off
+
   /// sing-box log verbosity for every config we build/import. Set by the app from
   /// the user's setting (default: 'info' in debug, 'warn' in release). Controls
   /// what the in-app log shows — 'warn' = quiet (warnings/errors), 'info' = every
@@ -167,6 +179,24 @@ class SingBoxConfig {
   /// custom value is still DPI-resistant — picking a plain blocked resolver would
   /// just break resolution, hence the default stays a known-good one.
   static String dnsServer = '77.88.8.8';
+
+  /// Benign foreign control IPs the watchdog raw-dials to tell a real "whitelist
+  /// mode" collapse (every foreign SYN dropped) from a mere node block. In TUN
+  /// mode [withTun] routes these DIRECT so the dial bypasses auto_route capture
+  /// and measures the PHYSICAL uplink — otherwise a dark tunnel eats the probe and
+  /// the banner false-fires. Single source of truth, shared with CoreController.
+  static const List<String> foreignProbeIps = [
+    '8.8.8.8', // Google Public DNS
+    '9.9.9.9', // Quad9
+    '208.67.222.222', // OpenDNS
+  ];
+
+  /// FakeIP synthetic ranges (RFC 2544 v4 benchmarking block + a ULA v6 block — not
+  /// private, not real routable traffic) for the opt-in TUN FakeIP DNS mode. The v6
+  /// range pairs with v4 so an app's AAAA query also gets a synthetic answer (matching
+  /// the imported-config fakeip path); RF has no working v6 so it's rarely exercised.
+  static const String _fakeipRange = '198.18.0.0/15';
+  static const String _fakeipRange6 = 'fc00::/18';
 
   static Map<String, dynamic> _ruleSet(String tag, String remoteUrl) {
     if (ruleSetDir.isNotEmpty) {
@@ -240,12 +270,13 @@ class SingBoxConfig {
       bool antiDpi = false,
       String tlsFingerprint = 'chrome',
       bool mux = false,
-      bool ech = false}) {
+      bool ech = false,
+      bool fakeip = false}) {
     final n = _prepare(node,
         antiDpi: antiDpi, fp: tlsFingerprint, mux: mux, ech: ech);
     return mode == RouteMode.smart
-        ? _smart([n.outbound], n.tag)
-        : _global([n.outbound], n.tag);
+        ? _smart([n.outbound], n.tag, fakeip: fakeip)
+        : _global([n.outbound], n.tag, fakeip: fakeip);
   }
 
   /// Tag of the auto-failover urltest group built by [fromNodes].
@@ -262,7 +293,8 @@ class SingBoxConfig {
       bool antiDpi = false,
       String tlsFingerprint = 'chrome',
       bool mux = false,
-      bool ech = false}) {
+      bool ech = false,
+      bool fakeip = false}) {
     final simple = nodes.where((n) => !n.isConfig).toList();
     if (simple.isEmpty) return m0Local();
     final prepared = simple
@@ -272,8 +304,8 @@ class SingBoxConfig {
     if (prepared.length == 1) {
       final n = prepared.first;
       return mode == RouteMode.smart
-          ? _smart([n.outbound], n.tag)
-          : _global([n.outbound], n.tag);
+          ? _smart([n.outbound], n.tag, fakeip: fakeip)
+          : _global([n.outbound], n.tag, fakeip: fakeip);
     }
     final proxies = <Map<String, dynamic>>[
       ...prepared.map((n) => n.outbound),
@@ -295,8 +327,8 @@ class SingBoxConfig {
       },
     ];
     return mode == RouteMode.smart
-        ? _smart(proxies, selectorTag)
-        : _global(proxies, selectorTag);
+        ? _smart(proxies, selectorTag, fakeip: fakeip)
+        : _global(proxies, selectorTag, fakeip: fakeip);
   }
 
   // Apply the opt-in anti-DPI layer to a node (on a deep copy): a real-browser
@@ -373,10 +405,28 @@ class SingBoxConfig {
       }
       ob['tls'] = t;
     }
-    // Multiplex (h2mux): TCP proxies only, NOT with XTLS-Vision flow (sing-box
-    // rejects mux + vision together).
+    // Multiplex: TCP proxies only, NOT with XTLS-Vision flow (sing-box rejects
+    // mux + vision together). Carrier/streams/padding come from the advanced
+    // knobs (default h2mux/8/off = the prior hardcoded behaviour).
     if (mux && isTcpProxy && (ob['flow'] == null || '${ob['flow']}'.isEmpty)) {
-      ob['multiplex'] = {'enabled': true, 'protocol': 'h2mux', 'max_streams': 8};
+      ob['multiplex'] = {
+        'enabled': true,
+        'protocol': muxProtocol,
+        'max_streams': muxStreams,
+        if (muxPadding) 'padding': true,
+      };
+    }
+    // TCP Fast Open / Multipath TCP — advanced opt-in dial knobs (default OFF).
+    // TFO is HONESTLY risky on a Windows-first RF client (it FATALs on `anytls`,
+    // can silently dead-tunnel per sing-box #1903, and middleboxes drop SYN-with-
+    // data on the RF paths we target) — so it is gated behind an explicit toggle +
+    // UI warning and NEVER touches anytls/QUIC. MPTCP applies to TCP-dial proxies.
+    const tcpDial = {
+      'vless', 'vmess', 'trojan', 'shadowsocks', 'shadowtls', 'socks', 'http'
+    };
+    if (type != null && tcpDial.contains(type)) {
+      if (tcpFastOpen) ob['tcp_fast_open'] = true;
+      if (mptcp) ob['tcp_multi_path'] = true;
     }
   }
 
@@ -390,16 +440,31 @@ class SingBoxConfig {
       ];
 
   static Map<String, dynamic> _global(
-          List<Map<String, dynamic>> proxies, String tag) =>
+          List<Map<String, dynamic>> proxies, String tag,
+          {bool fakeip = false}) =>
       {
         'log': {'level': logLevel, 'timestamp': true},
         'dns': {
           'servers': [
+            // FakeIP (opt-in, TUN): answer the app INSTANTLY with a synthetic IP
+            // (no DNS round-trip), then route by the remembered domain and let the
+            // EXIT resolve the real IP. Cuts first-load latency; no DNS leak.
+            if (fakeip)
+              {
+                'type': 'fakeip',
+                'tag': 'dns-fake',
+                'inet4_range': _fakeipRange,
+                'inet6_range': _fakeipRange6,
+              },
             {'type': 'https', 'tag': 'dns-proxy', 'server': '1.1.1.1', 'detour': tag},
             // No `detour: direct` — a DNS server dials direct by default, and
             // 1.13 FATALs on "detour to an empty direct outbound".
             {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
           ],
+          if (fakeip)
+            'rules': [
+              {'query_type': ['A', 'AAAA'], 'server': 'dns-fake'},
+            ],
           'final': 'dns-proxy',
           'strategy': 'ipv4_only', // RF has no working IPv6
         },
@@ -424,7 +489,8 @@ class SingBoxConfig {
 
   // RU + private -> direct, rest -> proxy; split DNS (RU direct, foreign tunnelled).
   static Map<String, dynamic> _smart(
-      List<Map<String, dynamic>> proxies, String tag) {
+      List<Map<String, dynamic>> proxies, String tag,
+      {bool fakeip = false}) {
     // Without the bundled rule-sets we can't geo-route — degrade to a SAFE
     // config (everything via proxy, only private IPs direct) rather than
     // reference a rule-set that isn't on disk (which FATALs the core).
@@ -433,12 +499,26 @@ class SingBoxConfig {
       'log': {'level': logLevel, 'timestamp': true},
       'dns': {
         'servers': [
+          // FakeIP (opt-in, TUN): instant synthetic answer → route by domain →
+          // EXIT resolves the real IP. RU domains are excluded below (they get a
+          // REAL direct answer so RU-direct routing still works on a real IP).
+          if (fakeip)
+            {
+              'type': 'fakeip',
+              'tag': 'dns-fake',
+              'inet4_range': _fakeipRange,
+              'inet6_range': _fakeipRange6,
+            },
           {'type': 'https', 'tag': 'dns-proxy', 'server': '1.1.1.1', 'detour': tag},
           {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
         ],
-        if (useRuleSets)
+        if (useRuleSets || fakeip)
           'rules': [
-            {'rule_set': 'geosite-ru', 'server': 'dns-direct'},
+            // RU domains FIRST → real direct DNS (NOT fakeip) so RU-direct routing
+            // matches on a real IP.
+            if (useRuleSets) {'rule_set': 'geosite-ru', 'server': 'dns-direct'},
+            // everything else → fakeip (foreign rides the proxy by domain).
+            if (fakeip) {'query_type': ['A', 'AAAA'], 'server': 'dns-fake'},
           ],
         'final': 'dns-proxy',
         'strategy': 'ipv4_only',
@@ -490,15 +570,27 @@ class SingBoxConfig {
       bool antiDpi = false,
       bool mux = false,
       bool ech = false,
-      bool ruDirect = false}) {
+      bool ruDirect = false,
+      bool keepAmneziaMarker = false}) {
     // Deep copy so we never mutate the stored profile.
     final cfg = jsonDecode(jsonEncode(src)) as Map<String, dynamic>;
 
     // Strip our non-standard `_`-prefixed stash keys (e.g. `_amneziawg` on a
     // wireguard endpoint) — the bundled core FATALs on unknown fields. They stay
     // in the STORED profile for a future AmneziaWG-capable core.
+    //
+    // EXCEPTION: when [keepAmneziaMarker] (set only when the awg bridge binary is
+    // present), KEEP `_amneziawg` so the controller can (a) classify the family as
+    // 'amneziawg' not plain 'wireguard' and (b) actually fire `_bridgeAmnezia`,
+    // which then REPLACES the endpoint with a `socks` outbound — so the bundled
+    // core still never sees the marker. The bridge's keep-path re-strips it if the
+    // bridge fails to spawn, so a stray marker can never reach the core.
     for (final e in (cfg['endpoints'] as List?) ?? const []) {
-      if (e is Map) e.removeWhere((k, _) => k.toString().startsWith('_'));
+      if (e is Map) {
+        e.removeWhere((k, _) =>
+            k.toString().startsWith('_') &&
+            !(keepAmneziaMarker && k == '_amneziawg'));
+      }
     }
     const unsupportedTransport = {'xhttp', 'splithttp', 'mkcp', 'kcp'};
     // Every outbound TYPE the bundled core (sing-box 1.13 + xray bridge) can run,
@@ -753,6 +845,15 @@ class SingBoxConfig {
       }
     }
 
+    // FakeIP is intentionally NOT applied to imported full configs. They bring their
+    // own DNS + routing (often IP-based geoip-ru RU-direct, or a direct-only final),
+    // and a fakeip catch-all forced onto arbitrary author routing BREAKS it: synthetic
+    // 198.18.x answers defeat ip_cidr rules (RU-direct then sends sanctioned RU sites
+    // out the foreign exit → reverse-geo-block), and a direct final blackholes every
+    // foreign site while the app still shows "Connected". FakeIP stays on app-managed
+    // nodes (fromNode/fromNodes) where we own the whole DNS+routing and the geosite-ru
+    // carve-out is guaranteed safe.
+
     // `services` are server/infra features (DERP relay, ssm-api, resolved). Drop
     // `resolved` — it FATALs off-Linux ("only supported on Linux") and on Linux
     // would fight our own TUN/DNS; an imported client profile never needs it.
@@ -786,6 +887,147 @@ class SingBoxConfig {
     }
     cfg['experimental'] = exp;
     return cfg;
+  }
+
+  /// Drop every outbound whose tag is in [dead] and cascade-prune the result so
+  /// the config stays loadable: scrub the dead tags from each selector/urltest
+  /// member list, remove any group thereby left empty (its own tag is then dead
+  /// too — repeated to a fixpoint, so nested pools cascade), strip a dangling
+  /// `detour` (on an outbound, endpoint, OR dns server), and RE-PIN a now-dangling
+  /// `route.final` to a surviving exit (never let it default to a direct leak).
+  ///
+  /// Mirrors the proven drop-cascade in [fromConfig], kept self-contained so the
+  /// safety-critical import path is untouched. Used by the xray bridge: when xray
+  /// REJECTS a member's generated config, leaving its original `type: xhttp`
+  /// outbound would make sing-box FATAL and take EVERY node down — so the dead
+  /// member is dropped instead and the surviving pool keeps working (the
+  /// selector / watchdog cascade simply never see it).
+  ///
+  /// Returns true if a usable proxy survives — ≥1 real proxy outbound (or a
+  /// wireguard/amnezia endpoint) remains AND `route.final`, if still pinned,
+  /// resolves to an existing outbound/endpoint — so the caller may launch the
+  /// pruned config. False means every exit died (e.g. a single XHTTP node xray
+  /// rejected): the caller must surface a clear error rather than run a config
+  /// that routes everything DIRECT (deanonymising fail-open) or silent-dead.
+  /// PURE: mutates [cfg] and returns the verdict.
+  static bool pruneDeadOutbounds(Map<String, dynamic> cfg, Set<String> dead) {
+    if (dead.isEmpty) return true;
+    const groupTypes = {'selector', 'urltest'};
+    const nonProxy = {'direct', 'block', 'dns', 'selector', 'urltest'};
+    final dropped = <String>{...dead};
+    var kept = [...((cfg['outbounds'] as List?) ?? const [])];
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final o in kept) {
+        if (o is! Map || !groupTypes.contains(o['type'])) continue;
+        final list = (o['outbounds'] as List?)
+            ?.where((t) => !dropped.contains(t.toString()))
+            .toList();
+        if (list != null) o['outbounds'] = list;
+        if (dropped.contains(o['default']?.toString())) o.remove('default');
+        if ((o['outbounds'] as List?)?.isEmpty ?? false) {
+          final tag = o['tag']?.toString();
+          if (tag != null && dropped.add(tag)) changed = true;
+        }
+      }
+    }
+    kept = kept
+        .where((o) => !(o is Map && dropped.contains(o['tag']?.toString())))
+        .toList();
+    cfg['outbounds'] = kept;
+    final endpoints = (cfg['endpoints'] as List?) ?? const [];
+    // A surviving exit to re-pin orphaned references onto — a group (resolves to
+    // proxies) first, else a real proxy, else a WG/amnezia endpoint.
+    String? firstTag(Iterable list, bool Function(Map) ok) {
+      for (final o in list) {
+        if (o is Map && ok(o)) {
+          final t = o['tag']?.toString();
+          if (t != null && t.isNotEmpty) return t;
+        }
+      }
+      return null;
+    }
+
+    final repin = firstTag(kept, (o) => groupTypes.contains(o['type'])) ??
+        firstTag(kept, (o) => !nonProxy.contains(o['type']?.toString())) ??
+        firstTag(endpoints, (_) => true);
+    // A surviving outbound/endpoint detouring through a dropped tag FATALs at
+    // runtime even though `sing-box check` passes — strip the dangling detour
+    // (the outbound then dials directly itself, which is its normal un-chained
+    // form; re-routing a chained dialer through an arbitrary survivor would
+    // silently change its path).
+    void scrubDetour(List? list, {String? repinTo}) {
+      for (final o in list ?? const []) {
+        if (o is Map && dropped.contains(o['detour']?.toString())) {
+          if (repinTo != null) {
+            o['detour'] = repinTo;
+          } else {
+            o.remove('detour');
+          }
+        }
+      }
+    }
+
+    scrubDetour(kept);
+    scrubDetour(endpoints);
+    // A dns.server whose `detour` pointed at a dropped tag is the SAME landmine:
+    // `sing-box check` PASSES but the core FATALs at service-start ("outbound
+    // detour not found"). Unlike a chained dialer, a DNS detour going DIRECT is a
+    // real leak: the DoH queries exit the physical uplink (visible/blocked by the
+    // ISP). RE-PIN it onto the surviving exit; strip only when nothing survives
+    // (the launch then fails closed via the hasProxy verdict below).
+    scrubDetour((cfg['dns'] as Map?)?['servers'] as List?, repinTo: repin);
+    final route = cfg['route'];
+    if (route is Map) {
+      // RE-PIN route.final, never just drop: an ABSENT final defaults to the FIRST
+      // outbound, which in an imported config could be `direct` ⇒ everything routes
+      // direct (a fail-OPEN leak). If nothing survives, remove it and let the hasProxy
+      // verdict below fail the launch (caller surfaces an error — never fails open).
+      if (dropped.contains(route['final']?.toString())) {
+        if (repin != null) {
+          route['final'] = repin;
+        } else {
+          route.remove('final');
+        }
+      }
+      // SAME landmine on route.rules: a rule whose `outbound` is a dropped tag — an
+      // always-injected Telegram rule, or a force-VPN / custom rule pinned to a leaf
+      // the xray bridge just failed — passes `sing-box check` yet FATALs the core at
+      // service-start ("outbound not found"), taking the whole tunnel down. Re-pin
+      // proxy-intent rules onto the survivor; drop them only if no exit survives (the
+      // launch then fails closed via the hasProxy verdict below).
+      final rules = route['rules'];
+      if (rules is List) {
+        final out = <dynamic>[];
+        for (final r in rules) {
+          if (r is Map && dropped.contains(r['outbound']?.toString())) {
+            if (repin != null) {
+              r['outbound'] = repin;
+              out.add(r);
+            }
+            // else: no surviving exit to send it to → drop the rule entirely
+          } else {
+            out.add(r);
+          }
+        }
+        route['rules'] = out;
+      }
+    }
+    // Survivability: a real proxy (or a WG/amnezia endpoint, bridged later) must
+    // remain. An unpinned route.final defaults to the first outbound, covered by
+    // the proxy check; a still-pinned one must resolve to a surviving exit.
+    final hasProxy = kept.any(
+            (o) => o is Map && !nonProxy.contains(o['type']?.toString())) ||
+        endpoints.isNotEmpty;
+    if (!hasProxy) return false;
+    final fin = route is Map ? route['final']?.toString() : null;
+    if (fin != null &&
+        !kept.any((o) => o is Map && o['tag']?.toString() == fin) &&
+        !endpoints.any((e) => e is Map && e['tag']?.toString() == fin)) {
+      return false;
+    }
+    return true;
   }
 
   // Pin Telegram (DC/relay CIDRs + domains, TCP AND UDP) to the PROXY exit so
@@ -1159,7 +1401,10 @@ class SingBoxConfig {
       'address': ['172.18.0.1/30', 'fdfe:dcba:9876::1/126'],
       'auto_route': true,
       'strict_route': true,
-      'stack': 'gvisor',
+      // gVisor (default) is the most compatible on Windows; `system`/`mixed` are
+      // advanced opt-ins (lower overhead, but rely on the OS stack). Validated to
+      // one of the known values upstream in AppSettings.
+      'stack': tunStack,
       'mtu': 9000,
     });
     cfg['inbounds'] = inbounds;
@@ -1179,24 +1424,52 @@ class SingBoxConfig {
     // leading sniff/hijack-dns (NOT before). DNS must be hijacked first: if a
     // process rule precedes hijack-dns, a forced app's UDP/53 matches it and is
     // sent raw to a TCP-only Vision node, so its DNS silently dies.
+    // Resolve (or create) the DIRECT outbound tag ONCE — shared by the whitelist
+    // probe rule and split-tunnel. Imported configs may name it differently or
+    // (rarely) omit it, in which case referencing 'direct' would FATAL.
+    String directTag = 'direct';
+    {
+      final outs = [...(cfg['outbounds'] as List? ?? const [])];
+      String? found;
+      for (final o in outs) {
+        if (o is Map &&
+            o['type'] == 'direct' &&
+            (o['tag']?.toString().isNotEmpty ?? false)) {
+          found = o['tag'].toString();
+          break;
+        }
+      }
+      if (found == null) {
+        outs.add({'type': 'direct', 'tag': directTag});
+        cfg['outbounds'] = outs;
+      } else {
+        directTag = found;
+      }
+    }
+
     final appRules = <dynamic>[];
+    // #3 (user-reported: "whitelist mode activates constantly"): route the
+    // watchdog's foreign-reachability probe IPs DIRECT. In TUN, auto_route
+    // captures the controller's own raw dial too, so a dark tunnel swallows the
+    // probe → the app concludes "all foreign dark" → false whitelist latch on
+    // every blip. Direct, the probe measures the PHYSICAL uplink: reachable ⇒ a
+    // node block (cascade/hop); all-dark ⇒ a genuine state-allowlist collapse.
+    appRules.add({
+      // SCOPED to our OWN process: only the watchdog's raw probe dial must escape the
+      // tunnel to measure the physical uplink. Without this process_name guard the rule
+      // routed EVERY app's traffic to these public-DNS IPs DIRECT — a DoH browser
+      // (Chrome/Firefox pointed at 8.8.8.8 / 9.9.9.9 / 208.67.222.222) would leak its
+      // real IP and all DNS past the tunnel in TUN, the "secure" mode. The process name
+      // is BINARY_NAME from windows/CMakeLists.txt; if it can't be matched the probe is
+      // merely tunnelled (a benign false-whitelist blip), never a silent leak.
+      'process_name': const ['vpn_app.exe'],
+      'ip_cidr': foreignProbeIps.map((ip) => '$ip/32').toList(),
+      'outbound': directTag,
+    });
     // Split-tunnel: route these processes DIRECT (bypass the VPN) — e.g. a game
     // for low latency.
     final apps = splitApps.where((a) => a.trim().isNotEmpty).toList();
     if (apps.isNotEmpty) {
-      final outs = [...(cfg['outbounds'] as List? ?? const [])];
-      String? directTag;
-      for (final o in outs) {
-        if (o is Map && o['type'] == 'direct') {
-          directTag = o['tag']?.toString();
-          break;
-        }
-      }
-      if (directTag == null || directTag.isEmpty) {
-        directTag = 'direct';
-        outs.add({'type': 'direct', 'tag': directTag});
-        cfg['outbounds'] = outs;
-      }
       appRules.add({'process_name': apps, 'outbound': directTag});
     }
     // Force-through-VPN apps: pin them to the config's main VPN outbound (route
@@ -1205,24 +1478,22 @@ class SingBoxConfig {
     // (no-server / desync mode), where there is no VPN outbound to pin to.
     final pinned = forceApps.where((a) => a.trim().isNotEmpty).toList();
     final finalTag = route['final']?.toString();
-    if (pinned.isNotEmpty && finalTag != null && finalTag != 'direct') {
+    if (pinned.isNotEmpty && finalTag != null && finalTag != directTag) {
       appRules.add({'process_name': pinned, 'outbound': finalTag});
     }
+    // Index past the leading sniff/hijack-dns block (from prepend OR already in
+    // the imported rules), insert the app rules there — ahead of geo/proxy rules
+    // so they still win, but behind DNS hijack so DNS resolves.
     final merged = [...prepend, ...rules];
-    if (appRules.isNotEmpty) {
-      // Index past the leading sniff/hijack-dns block (from prepend OR already in
-      // the imported rules), insert the app rules there — ahead of geo/proxy
-      // rules so they still win, but behind DNS hijack so DNS resolves.
-      var at = 0;
-      for (final r in merged) {
-        if (r is Map && (r['action'] == 'sniff' || r['action'] == 'hijack-dns')) {
-          at++;
-        } else {
-          break;
-        }
+    var at = 0;
+    for (final r in merged) {
+      if (r is Map && (r['action'] == 'sniff' || r['action'] == 'hijack-dns')) {
+        at++;
+      } else {
+        break;
       }
-      merged.insertAll(at, appRules);
     }
+    merged.insertAll(at, appRules);
     route['rules'] = merged;
 
     // Ensure hijacked DNS has somewhere to resolve.
@@ -1240,11 +1511,119 @@ class SingBoxConfig {
     return cfg;
   }
 
+  /// Inject the user's custom routing rules (domain/ip → proxy/direct/block) into
+  /// route.rules — competitor parity (Throne / Karing / v2rayN / Hiddify all let
+  /// the user force specific destinations; we only had smart/global). Placed
+  /// AFTER the leading sniff/hijack-dns (so DNS still resolves) but BEFORE the
+  /// geo/smart rules (so a user rule WINS). Each value is sanitised (control-char
+  /// strip + a shape check) so a hostile/typo'd entry can't inject or FATAL the
+  /// core; a "proxy" rule is dropped in no-server mode (nothing to proxy through).
+  /// Applied uniformly by the controller to every built config (simple node,
+  /// imported config, auto-pool), before [withTun]. PURE.
+  static Map<String, dynamic> applyCustomRules(
+      Map<String, dynamic> cfg, List<RouteRule> rules) {
+    if (rules.isEmpty) return cfg;
+    final route = (cfg['route'] as Map?)?.cast<String, dynamic>();
+    if (route == null) return cfg;
+    final ruleList = [...(route['rules'] as List? ?? const [])];
+
+    // Resolve (or create) the direct tag; resolve the proxy = route.final.
+    String directTag = 'direct';
+    final outs = [...(cfg['outbounds'] as List? ?? const [])];
+    String? foundDirect;
+    for (final o in outs) {
+      if (o is Map &&
+          o['type'] == 'direct' &&
+          (o['tag']?.toString().isNotEmpty ?? false)) {
+        foundDirect = o['tag'].toString();
+        break;
+      }
+    }
+    if (foundDirect == null) {
+      outs.add({'type': 'direct', 'tag': directTag});
+      cfg['outbounds'] = outs;
+    } else {
+      directTag = foundDirect;
+    }
+    final finalTag = route['final']?.toString();
+
+    final built = <dynamic>[];
+    for (final r in rules) {
+      // Validate with the SAME check the UI uses (RouteRule.isValidValue) so a
+      // value the editor accepted always emits, and a typo never FATALs the core.
+      if (!RouteRule.isValidValue(r.field, r.value)) continue;
+      final value = RouteRule.cleanValue(r.field, r.value);
+      final m = <String, dynamic>{
+        r.matchKey: [value],
+      };
+      switch (r.action) {
+        case RuleAction.block:
+          m['action'] = 'reject';
+        case RuleAction.direct:
+          m['outbound'] = directTag;
+        case RuleAction.proxy:
+          if (finalTag == null || finalTag.isEmpty || finalTag == directTag) {
+            continue; // no-server / desync mode — nothing to proxy through
+          }
+          m['outbound'] = finalTag;
+      }
+      built.add(m);
+    }
+    if (built.isEmpty) return cfg;
+
+    var at = 0;
+    for (final x in ruleList) {
+      if (x is Map &&
+          (x['action'] == 'sniff' ||
+              x['action'] == 'hijack-dns' ||
+              // Keep custom rules BELOW the watchdog's foreign-probe DIRECT rule, so
+              // a user "public-DNS → proxy" rule (8.8.8.8 → proxy) can't pull the raw
+              // uplink probe into the tunnel — which would mask a real node block as
+              // a whitelist collapse. The probe rule must always win.
+              _isForeignProbeRule(x))) {
+        at++;
+      } else {
+        break;
+      }
+    }
+    ruleList.insertAll(at, built);
+    route['rules'] = ruleList;
+    cfg['route'] = route;
+    return cfg;
+  }
+
+  // The watchdog's raw foreign-uplink probe rule (scoped to our own process):
+  // process_name == [vpn_app.exe] routing the baked control IPs DIRECT. Custom
+  // rules must sort BELOW it so a user rule can never re-route the probe.
+  static bool _isForeignProbeRule(Map x) {
+    final pn = x['process_name'];
+    return pn is List &&
+        pn.length == 1 &&
+        pn.first == 'vpn_app.exe' &&
+        x['ip_cidr'] is List;
+  }
+
   /// Stamp Brutal-style fixed bandwidth onto every hysteria2 outbound when the
   /// user has set their line speed. Hysteria2's congestion control holds
   /// throughput under loss/jitter (noisy RF links) when told the real up/down
   /// rate; 0 leaves it to Hysteria2's default auto-tune (field omitted). Safe
   /// no-op for every other protocol and when both are 0.
+  /// Inject the user's EDNS Client Subnet into the DNS block — one choke point
+  /// (like [tuneHysteria2]) covering every build path. No-op when unset. Lets the
+  /// user pin geo-resolution to a chosen subnet for better CDN locality.
+  static Map<String, dynamic> applyEcs(Map<String, dynamic> cfg) {
+    // Defence-in-depth: emit only a VALID client_subnet. The setter already
+    // rejects bad input, but a tool/test could set the static directly — and an
+    // invalid subnet (typo / bad prefix) FATALs the core.
+    if (ecsSubnet.isEmpty ||
+        !RouteRule.isValidValue(RuleField.ipCidr, ecsSubnet)) {
+      return cfg;
+    }
+    final dns = cfg['dns'];
+    if (dns is Map) dns['client_subnet'] = ecsSubnet;
+    return cfg;
+  }
+
   static Map<String, dynamic> tuneHysteria2(
       Map<String, dynamic> cfg, int upMbps, int downMbps) {
     if (upMbps <= 0 && downMbps <= 0) return cfg;

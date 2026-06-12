@@ -113,6 +113,84 @@ bool familyResistsFpCycling(String? family) =>
         family == 'hysteria' ||
         family == 'tuic');
 
+/// RF-2026 survivability TIER of a transport family (higher = more likely to get
+/// through ТСПУ). Verified intel (deep-research 2026-06-04): the censor now blocks
+/// plain VLESS / SOCKS5 / L2TP by signature (Dec-2025) and plain WireGuard ~100%
+/// by its fixed 148-byte handshake; the survivors are transport-OBFUSCATED —
+/// XHTTP-split request/response pairs and QUIC (Hysteria2/TUIC) — plus Reality
+/// (the inner VLESS is wrapped in a real-SNI TLS handshake, so the VLESS signature
+/// is encrypted). Used as the PRIMARY ordering key in [planCascade] so a hop lands
+/// on a survivor first. A PRIOR, not gospel: the live /delay probe still decides,
+/// so even if Reality were degraded the cascade self-corrects. PURE.
+///   3 = verified survivor   (reality / xhttp / hysteria2 / tuic / hysteria)
+///   2 = obfuscated / wrapped (shadowtls / anytls / *-grpc / *-ws / *-httpupgrade / *-http)
+///   1 = bare TLS incl. plain VLESS, now signature-targeted (vless/trojan/vmess-tls; unknown)
+///   0 = detected-by-design   (plain shadowsocks / wireguard / socks / http-proxy)
+int transportSurvivability(String? family) {
+  if (family == null) return 1;
+  final f = family.toLowerCase();
+  if (f.endsWith('-reality') ||
+      f.endsWith('-xhttp') ||
+      f == 'hysteria2' ||
+      f == 'tuic' ||
+      f == 'hysteria') {
+    return 3;
+  }
+  // Plain VLESS is Dec-2025 signature-blocked REGARDLESS of its TCP transport: a
+  // ws / grpc / httpupgrade wrapper does NOT mask the VLESS signature the way
+  // Reality does (only the -reality / -xhttp forms above survive). So vless-ws /
+  // vless-grpc are NOT meaningfully more survivable than bare vless-tls — rank
+  // them tier 1, not tier 2, so the cascade doesn't waste an episode hopping to an
+  // equally-detectable VLESS form instead of jumping to Reality/XHTTP/QUIC.
+  if (f.startsWith('vless-')) return 1;
+  if (f == 'shadowtls' ||
+      f == 'anytls' ||
+      f == 'amneziawg' || // WireGuard with Amnezia DPI-evading obfuscation
+      f == 'shadowsocks-plugin' || // SS behind an obfs / v2ray plugin
+      f.endsWith('-grpc') ||
+      f.endsWith('-ws') ||
+      f.endsWith('-httpupgrade') ||
+      f.endsWith('-http')) {
+    return 2;
+  }
+  if (f == 'wireguard' || f == 'shadowsocks' || f == 'socks' || f == 'http') {
+    return 0;
+  }
+  return 1; // bare TLS (incl. plain trojan/vmess-tls — also signature-adjacent)
+}
+
+/// True iff [family] rides a transport the 2025 16KB connection-FREEZE can't
+/// policing: QUIC (Hysteria2/TUIC/Hysteria) is UDP — not the per-TCP-connection
+/// byte counter the freeze uses — and XHTTP-split recycles each sub-16KB request
+/// socket before it crosses the threshold. Reality+Vision on TCP-TLS (and plain
+/// TLS) is freeze-VULNERABLE. Used as a freeze-context sub-rank in [planCascade]
+/// so a freeze-driven hop prefers an immune transport within the same tier. PURE.
+bool freezeImmune(String? family) {
+  if (family == null) return false;
+  final f = family.toLowerCase();
+  return f == 'hysteria2' ||
+      f == 'tuic' ||
+      f == 'hysteria' ||
+      f.endsWith('-xhttp');
+}
+
+/// True iff [family] is a plain VLESS that ISN'T wrapped in Reality/XHTTP (the
+/// only VLESS forms that survive the Dec-2025 signature block).
+bool _isBareVless(String f) =>
+    f.startsWith('vless-') && !f.endsWith('-reality') && !f.endsWith('-xhttp');
+
+/// True for transports the censor now blocks WHOLESALE in RF — used to NUDGE the
+/// user toward a survivor when their ACTIVE node rides one. Includes plain
+/// VLESS+TLS: VLESS is one of the three signature-blocked protocols, so only its
+/// Reality/XHTTP-wrapped forms are expected to survive. PURE.
+bool transportWidelyBlocked(String? family) {
+  if (family == null) return false;
+  final f = family.toLowerCase();
+  // tier-0 (detected by design: plain WG/SS/SOCKS/HTTP) OR any plain VLESS that
+  // isn't Reality/XHTTP-wrapped (vless-tls / vless-ws / vless-grpc / …).
+  return transportSurvivability(f) == 0 || _isBareVless(f);
+}
+
 /// What the 16KB-freeze watch decided — see [decideFreeze].
 enum FreezeAction {
   none, // bulk flows (or not yet debounced) — hold
@@ -159,6 +237,16 @@ FreezeAction decideFreeze({
 ///    — or a bridge retag — never silently merges XHTTP with Reality.
 /// Selectors/urltests/direct/block/dns are skipped (not proxy leaves). Pass the
 /// result into [planCascade] as `families`; null there falls back to raw type.
+/// True iff a wireguard outbound/endpoint carries AmneziaWG obfuscation — stashed
+/// under `_amneziawg`, or inlined as the jc/jmin/s1-4/h1-4 knobs. PURE.
+bool _hasAmnezia(Map o) {
+  if (o['_amneziawg'] != null) return true;
+  for (final k in const ['jc', 'jmin', 'jmax', 's1', 's2', 'h1', 'h2', 'h3', 'h4']) {
+    if (o[k] != null) return true;
+  }
+  return false;
+}
+
 Map<String, String> familiesFromConfig(Map<String, dynamic> cfg) {
   final out = <String, String>{};
   void classify(dynamic o) {
@@ -190,11 +278,19 @@ Map<String, String> familiesFromConfig(Map<String, dynamic> cfg) {
       case 'tuic':
       case 'shadowtls':
       case 'anytls':
-      case 'shadowsocks':
       case 'socks':
       case 'http':
-      case 'wireguard':
         fam = type; // already a distinct family on its own
+      case 'shadowsocks':
+        // An obfs / v2ray-plugin masks the Shadowsocks signature → NOT the plain,
+        // tier-0 form the censor detects by design (so don't false-flag it blocked).
+        final plugin = (o['plugin'] ?? '').toString();
+        fam = plugin.isNotEmpty ? 'shadowsocks-plugin' : 'shadowsocks';
+      case 'wireguard':
+        // AmneziaWG obfuscation (jc/jmin/s1-4/h1-4, stashed under _amneziawg) is
+        // DPI-evading — NOT the plain fixed-148-byte-handshake WireGuard the censor
+        // drops ~100%. Classify it apart so it isn't warned as "widely blocked".
+        fam = _hasAmnezia(o) ? 'amneziawg' : 'wireguard';
       default:
         fam = null; // selector/urltest/direct/block/dns/etc — not a proxy leaf
     }
@@ -216,15 +312,30 @@ Map<String, String> familiesFromConfig(Map<String, dynamic> cfg) {
 /// watchdog cascade must NEVER silently route through one (H5) — the user only
 /// reaches it via an explicit, consent-gated manual connect. Mirrors
 /// ParsedNode.insecure for raw cfg outbounds; pass into [planCascade] as
-/// `insecure`.
-Set<String> insecureTagsFromConfig(Map<String, dynamic> cfg) {
+/// `insecure`. For a USER-driven manual switch use [mitmTagsFromConfig] instead —
+/// it does NOT excuse hy2/tuic.
+Set<String> insecureTagsFromConfig(Map<String, dynamic> cfg) =>
+    _tlsInsecureTags(cfg, excuseQuicPsk: true);
+
+/// Like [insecureTagsFromConfig] but ALSO flags hysteria2/tuic whose `tls.insecure`
+/// is set. hy2/tuic auth the server by PSK, so the UNATTENDED cascade tolerates
+/// them — but a USER-initiated manual switch (Policies "test & pick fastest", a
+/// member tap) must still raise the H5 MITM consent: `tls.insecure` means no cert
+/// check, an on-path MITM hole the PSK doesn't close. Mirrors ParsedNode.insecure
+/// (proxy_node.dart), which flags hy2/tuic. Use this at the UI guard sites; keep
+/// [insecureTagsFromConfig] for the auto-failover pool.
+Set<String> mitmTagsFromConfig(Map<String, dynamic> cfg) =>
+    _tlsInsecureTags(cfg, excuseQuicPsk: false);
+
+Set<String> _tlsInsecureTags(Map<String, dynamic> cfg,
+    {required bool excuseQuicPsk}) {
   final out = <String>{};
   void scan(dynamic o) {
     if (o is! Map) return;
     final tag = o['tag']?.toString();
     if (tag == null || tag.isEmpty) return;
     final type = o['type']?.toString();
-    if (type == 'hysteria2' || type == 'tuic') return;
+    if (excuseQuicPsk && (type == 'hysteria2' || type == 'tuic')) return;
     final tls = o['tls'];
     if (tls is Map && tls['insecure'] == true && tls['reality'] == null) {
       out.add(tag);
@@ -275,6 +386,7 @@ CascadePlan planCascade(
   Set<String> tried, {
   Map<String, String>? families,
   Set<String>? insecure,
+  bool freezeContext = false,
 }) {
   if (groups.isEmpty) return const CascadePlan();
   final byName = {for (final g in groups) g.name: g};
@@ -341,7 +453,21 @@ CascadePlan planCascade(
                 leafFamily && // a DIFFERENT family than the (dark) current one
             !tried.contains(f); // not already tried this episode
       }).toList()..sort((a, b) {
-        // a different physical layer than the current leaf comes first (TCP↔QUIC).
+        // PRIMARY: most RF-2026-survivable family first (XHTTP/QUIC/Reality over
+        // a now-signature-blocked plain VLESS/SS/WG) — hop toward what gets
+        // through, per the Dec-2025 intel. SECONDARY: a different physical layer
+        // than the current leaf (TCP↔QUIC), so a TCP wave is answered by QUIC.
+        final sa = transportSurvivability(familyOf(a));
+        final sb = transportSurvivability(familyOf(b));
+        if (sa != sb) return sb.compareTo(sa);
+        // Under a 16KB-freeze, break a same-tier tie toward a freeze-IMMUNE
+        // transport (QUIC / XHTTP) so the hop doesn't land on an equally-frozen
+        // Reality+Vision TCP-TLS leaf — the exact transport the freeze degrades.
+        if (freezeContext) {
+          final fa = freezeImmune(familyOf(a)) ? 0 : 1;
+          final fb = freezeImmune(familyOf(b)) ? 0 : 1;
+          if (fa != fb) return fa.compareTo(fb);
+        }
         final da = _typeIsQuic(rawTypeOf(a)) != curQuic ? 0 : 1;
         final db = _typeIsQuic(rawTypeOf(b)) != curQuic ? 0 : 1;
         return da.compareTo(db);

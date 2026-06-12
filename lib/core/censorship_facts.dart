@@ -37,6 +37,7 @@ class CensorshipFacts {
     required this.desyncDomains,
     required this.freezeProbeUrl,
     required this.freezeThresholdKb,
+    this.latestVersion = '',
   });
 
   final int version; // feed revision (monotonic; we never downgrade)
@@ -44,6 +45,12 @@ class CensorshipFacts {
   final List<String> desyncDomains; // throttled-site suffixes for DPI-desync
   final String freezeProbeUrl; // ① bulk-probe target (HTTPS, dialed via proxy)
   final int freezeThresholdKb; // ① "bulk arrived" floor
+  // Newest app version the feed knows of — a FALLBACK for the update check when
+  // GitHub is blocked even through the tunnel (the data-push channel still gets
+  // through). Display/notify ONLY: it never downloads or runs anything; the user
+  // is pointed to the signed release page. '' = unknown. Clamped to a digits+dots
+  // version on parse, so a hostile feed can't smuggle a string/URL here.
+  final String latestVersion;
 
   /// The baked defaults == exactly today's hardcoded behaviour, so the app is
   /// byte-identical with NO feed (offline / first run / fetch fails / no URL).
@@ -158,12 +165,20 @@ class CensorshipFacts {
     final raw =
         (j['updated']?.toString() ?? '').replaceAll(RegExp(r'[\x00-\x1f]'), '').trim();
     final updated = raw.isEmpty ? 'unknown' : (raw.length > 40 ? raw.substring(0, 40) : raw);
+    // latestVersion: a STRING digits+dots version only (e.g. "1.0.4"); anything
+    // else → '' (a bare int would .toString() into a huge bogus version that the
+    // update check would treat as newer, so require the String type explicitly).
+    final rawLatest =
+        j['latestVersion'] is String ? (j['latestVersion'] as String).trim() : '';
+    final latest =
+        RegExp(r'^\d{1,4}(\.\d{1,4}){0,3}$').hasMatch(rawLatest) ? rawLatest : '';
     return CensorshipFacts(
       version: version,
       updated: updated,
       desyncDomains: domains.isEmpty ? defaults.desyncDomains : domains,
       freezeProbeUrl: url,
       freezeThresholdKb: kb,
+      latestVersion: latest,
     );
   }
 
@@ -173,6 +188,7 @@ class CensorshipFacts {
         'desyncDomains': desyncDomains,
         'freezeProbeUrl': freezeProbeUrl,
         'freezeThresholdKb': freezeThresholdKb,
+        if (latestVersion.isNotEmpty) 'latestVersion': latestVersion,
       };
 
   /// Persist a validated feed to the disk cache (best-effort). Public so the

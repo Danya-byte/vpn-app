@@ -9,10 +9,12 @@ import 'package:vpn_app/core/app_settings.dart';
 import 'package:vpn_app/core/profile_store.dart';
 import 'package:vpn_app/main.dart';
 
-/// #4 / click-test (#3): the first-run protection chooser must appear on a fresh
-/// install (seenSetup=false), apply the user's pick, and never show again. This
-/// automates the part of the native click-test that IS headless-testable (the
-/// Dart UI flow + persistence) — the tray/UAC bits still need a human.
+/// The first-run protection chooser is now DEFERRED to after the first successful
+/// connect (a newcomer isn't asked a security question before they even have a
+/// server). The headless-testable invariant is therefore the NEGATIVE: on a fresh
+/// install the chooser must NOT block the launch, and setup must not be silently
+/// completed. (The post-connect appearance needs the real core, which tests never
+/// drive — see the "tests never touch the real store / never launch the VPN" rule.)
 void main() {
   late Directory tmp;
 
@@ -21,8 +23,8 @@ void main() {
     tmp = Directory.systemTemp.createTempSync('vpn_firstrun_test_');
     ProfileStore.overrideDir = tmp.path;
     SettingsController.overrideDir = tmp.path;
-    // Deliberately DO NOT write settings.json → seenSetup defaults false → the
-    // chooser must fire on first frame.
+    // Deliberately DO NOT write settings.json → seenSetup defaults false. The
+    // chooser must NOT fire on first frame (it's deferred to post-first-connect).
   });
 
   tearDown(() {
@@ -40,7 +42,7 @@ void main() {
         : <String, dynamic>{};
   }
 
-  testWidgets('first-run chooser appears, applies the pick, and is one-shot',
+  testWidgets('first-run chooser is DEFERRED — it does not block a fresh launch',
       (tester) async {
     tester.view.physicalSize = const Size(440, 880);
     tester.view.devicePixelRatio = 1.0;
@@ -48,21 +50,17 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     await tester.pumpWidget(const ProviderScope(child: VpnApp()));
-    await tester.pumpAndSettle(); // let the post-frame dialog route settle
-
-    // The chooser is up with both options (en is the test default).
-    expect(find.text('Choose your protection'), findsOneWidget);
-    expect(find.text('App proxy'), findsOneWidget);
-    expect(find.text('Full-device protection'), findsOneWidget);
-
-    // Pick the simple proxy mode.
-    await tester.tap(find.text('App proxy'));
     await tester.pumpAndSettle();
 
-    // Dialog dismissed and the choice persisted (one-shot + applied).
+    // The protection chooser must NOT appear up-front (en is the test default) —
+    // it's deferred to after the first successful connect.
     expect(find.text('Choose your protection'), findsNothing);
+    expect(find.text('Full-device protection'), findsNothing);
+
+    // And it must NOT have been silently completed on launch — setup stays pending
+    // until the user actually connects and makes the choice.
     final s = persistedSettings();
-    expect(s['seenSetup'], isTrue, reason: 'chooser must not show again');
-    expect(s['vpnMode'], 'systemProxy', reason: 'the pick is applied + saved');
+    expect(s['seenSetup'] ?? false, isFalse,
+        reason: 'setup is deferred, not auto-completed on launch');
   });
 }

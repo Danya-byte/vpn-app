@@ -1,15 +1,24 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart'; // StateProvider (Riverpod 3)
 
 import '../../core/app_settings.dart';
 import '../../core/core_controller.dart';
+import '../../core/deeplink.dart' show importablePayload;
 import '../../core/format.dart';
+import '../../core/native_admin.dart';
 import '../../core/profiles_controller.dart';
 import '../../core/sub_info.dart';
+import '../../core/update_check.dart';
 import '../../l10n/app_localizations.dart';
+import '../../widgets/app_toast.dart';
 import '../../widgets/glass.dart';
+import 'widgets/clipboard_offer.dart';
 import 'widgets/config_viewer.dart';
 import 'widgets/connect_button.dart';
+import 'widgets/import_actions.dart';
 import 'widgets/profiles_sheet.dart';
 
 // Compact subscription status: "12.3 / 100 GB  ·  28 d left" (each part shown
@@ -43,6 +52,8 @@ class HomePage extends ConsumerWidget {
           const _HomeTitle(),
           const SizedBox(height: 18),
           const _ProfileBar(),
+          const _UpdateBanner(),
+          const _ClipboardImportBanner(),
           // Center the stack when it fits, but SCROLL when it doesn't (small
           // window + several status banners) — else the bottom items, including
           // the fail-closed _UnblockButton, get pushed off-screen with no way to
@@ -65,6 +76,7 @@ class HomePage extends ConsumerWidget {
                       const _ExitIpLabel(),
                       const _FenceBadge(),
                       const _WhitelistBanner(),
+                      const _HardNetworkCta(),
                       const _UnblockButton(),
                       const _ProxyModeHint(),
                     ],
@@ -74,6 +86,135 @@ class HomePage extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Dismissed-update version for THIS session — re-appears on the next launch so
+/// the user always learns about a pending update on entry, but isn't nagged after
+/// they've acknowledged it once.
+final _updateDismissedProvider = StateProvider<String?>((_) => null);
+
+/// Prominent "a new version is out" banner on Home — so a user learns about an
+/// update the moment they open the app, not only if they dig into Settings →
+/// About. Opens the SIGNED release page (GitHub) to download; the app never
+/// auto-downloads or runs an installer over a possibly-tampered network — that is
+/// exactly the supply-chain risk this app exists to avoid.
+class _UpdateBanner extends ConsumerWidget {
+  const _UpdateBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final update = ref.watch(updateProvider).value;
+    if (update == null) return const SizedBox.shrink();
+    if (ref.watch(_updateDismissedProvider) == update.version) {
+      return const SizedBox.shrink();
+    }
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: GlassCard(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        child: Row(
+          children: [
+            Icon(Icons.system_update_rounded,
+                size: 20, color: scheme.primary),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(l.updateAvailable(update.version),
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  Text(l.updateBannerHint,
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: scheme.onSurface.withValues(alpha: 0.6))),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            TgButton(
+                label: l.updateNow,
+                onPressed: () => NativeAdmin.openUrl(update.url)),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, size: 18),
+              visualDensity: VisualDensity.compact,
+              tooltip: l.cancel,
+              onPressed: () => ref
+                  .read(_updateDismissedProvider.notifier)
+                  .state = update.version,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One-tap "import the server link I spotted on your clipboard" banner — the
+/// highest-ROI cold-start helper. Tapping Add routes through the SAME untrusted
+/// import preview-gate as a dropped file / deeplink, so a hostile link can never
+/// silently apply. Dismiss (or Add) won't re-offer the same link.
+class _ClipboardImportBanner extends ConsumerWidget {
+  const _ClipboardImportBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final payload = ref.watch(clipboardImportProvider);
+    if (payload == null) return const SizedBox.shrink();
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: GlassCard(
+        padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+        child: Row(
+          children: [
+            Icon(Icons.content_paste_go_rounded, size: 18, color: scheme.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(l.clipboardOfferText,
+                  style: const TextStyle(fontSize: 12.5),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis),
+            ),
+            TextButton(
+              onPressed: () async {
+                final p = importablePayload(payload);
+                // Hide the banner now but DON'T latch yet — the preview-gate may be
+                // cancelled, and latching here would permanently suppress a link the
+                // user wanted to retry.
+                clearClipboardOffer(ref, latch: false);
+                if (p == null) return;
+                final before = ref.read(profilesProvider).nodes.length;
+                // Untrusted source (clipboard) → the import preview-gate decides.
+                // Clipboard text is always CONTENT, never a file path — and an
+                // unwrapped payload may legitimately lack '://' (hiddify://import/
+                // unwraps to a bare base64 subscription), which importFromFile
+                // would misread as a path and fail with a load error.
+                await importDroppedContent(context, ref, utf8.encode(p),
+                    trusted: false);
+                // Only suppress re-offers once the import actually added node(s); a
+                // cancelled preview leaves the count unchanged → stays re-offerable.
+                if (ref.read(profilesProvider).nodes.length != before) {
+                  markClipboardImported(payload);
+                }
+              },
+              child: Text(l.importAction),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, size: 18),
+              visualDensity: VisualDensity.compact,
+              tooltip: l.cancel,
+              onPressed: () => clearClipboardOffer(ref),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -203,6 +344,77 @@ class _WhitelistBanner extends ConsumerWidget {
                         .colorScheme
                         .onSurface
                         .withValues(alpha: 0.7))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Works on Wi-Fi, not on mobile" — when the tunnel goes dark on a NON-whitelist
+/// network (selective operator blocking), offer ONE tap that turns on the full
+/// hard-network escalation (force TLS fragmentation + survivor-preferring cascade
+/// + auto-adapt) atomically, instead of making the user dig through Advanced.
+/// Hidden once that's already on (it can't help twice) and on a pure whitelist
+/// collapse (where _WhitelistBanner explains the physics limit instead).
+class _HardNetworkCta extends ConsumerWidget {
+  const _HardNetworkCta();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final dark = ref.watch(coreControllerProvider
+        .select((s) => s.isOn && s.tunnelDark && !s.whitelistMode));
+    final canEscalate =
+        !ref.watch(settingsProvider.select((s) => s.maxResistance));
+    if (!dark || !canEscalate) return const SizedBox.shrink();
+    final l = AppLocalizations.of(context);
+    const amber = Color(0xFFE0A53D);
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 320),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: amber.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: amber.withValues(alpha: 0.4)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(l.hardNetworkCtaText,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.35,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.75))),
+            const SizedBox(height: 8),
+            GlassButton(
+              onPressed: () async {
+                final changed =
+                    ref.read(settingsProvider.notifier).enableHardNetwork();
+                if (!changed) return;
+                // On a default install antiDpi+autoAdapt are already on, so flipping
+                // maxResistance leaves the generated config byte-identical → the
+                // settings-watcher schedules NO restart and the escalation would
+                // silently do nothing while the toast claims "reconnecting". Force a
+                // genuine reconnect so the tunnel actually re-dials (fresh cascade +
+                // fp cycle under maxResistance) — the CTA exists precisely for the
+                // dark state, where re-attempting the connection is the whole point.
+                if (ref.read(coreControllerProvider).isOn) {
+                  await ref
+                      .read(coreControllerProvider.notifier)
+                      .restart(reason: 'hard network escalation');
+                }
+                if (context.mounted) {
+                  AppToast.of(context).message(l.hardNetworkCtaDone);
+                }
+              },
+              child: Text(l.hardNetworkCtaAction),
+            ),
           ],
         ),
       ),
@@ -445,13 +657,18 @@ class _StatusLabel extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     // Watch only the three fields shown — not the whole CoreState — so appended
     // log lines don't rebuild the status label (record select = structural eq).
-    final (status, error, detail, dark) = ref.watch(coreControllerProvider
-        .select((s) => (s.status, s.error, s.detail, s.tunnelDark)));
+    final (status, error, detail, dark, swapping) = ref.watch(
+        coreControllerProvider.select(
+            (s) => (s.status, s.error, s.detail, s.tunnelDark, s.swapping)));
     final (String label, Color color) = switch (status) {
       // Up but carrying no traffic (watchdog dark window) — don't claim a solid
       // "Connected"; show an honest amber "checking" until it recovers or acts.
       CoreStatus.running when dark => (l.statusChecking, const Color(0xFFE0A53D)),
       CoreStatus.running => (l.statusConnected, scheme.primary),
+      // A swap (node-switch / network / settings restart) keeps the proxy pinned —
+      // show a calm amber "Checking…", not the "Connecting…" of a fresh connect.
+      CoreStatus.starting when swapping =>
+        (l.statusChecking, const Color(0xFFE0A53D)),
       CoreStatus.starting => (l.statusConnecting, scheme.onSurface),
       CoreStatus.stopping => (l.statusDisconnecting, scheme.onSurface),
       CoreStatus.error => (l.statusError, scheme.error),

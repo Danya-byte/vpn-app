@@ -94,10 +94,13 @@ jobs:
       - run: flutter --version
       - run: flutter pub get
 
-      # SHA-256-pinned cores (sing-box + xray) + rule-sets, per tool/fetch-cores.ps1.
+      # SHA-256-pinned cores (sing-box + xray) + rule-sets + the desync engine
+      # (winws/WinDivert/quic_initial), per tool/fetch-cores.ps1. -IncludeDesync is
+      # REQUIRED: it ships the headline "server-less DPI bypass" — without it every
+      # release is desync-less and that feature is permanently `missing`.
       - name: Fetch pinned cores
         shell: pwsh
-        run: ./tool/fetch-cores.ps1 -IncludeXray
+        run: ./tool/fetch-cores.ps1 -IncludeXray -IncludeDesync
 
       # Gate the release on a clean analyze + the full suite (incl. the REAL
       # `sing-box check` against the just-fetched core). A broken build must never

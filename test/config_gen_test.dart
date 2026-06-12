@@ -390,6 +390,28 @@ proxies:
     expect(peer['address'], 'vpn.example.com');
     expect(peer['port'], 51820);
     expect(peer['allowed_ips'], ['0.0.0.0/0', '::/0']);
+    // No PersistentKeepalive in the conf → default to WG's standard 25s so the
+    // tunnel stays alive (the "long-lived" behaviour WG is known for).
+    expect(peer['persistent_keepalive_interval'], 25);
     expect((cfg['route'] as Map)['final'], 'wg');
+  });
+
+  test('WG .conf: an explicit PersistentKeepalive is honoured, incl. a '
+      'deliberate 0 (not overridden)', () {
+    String conf(String ka) => '[Interface]\n'
+        'PrivateKey = aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AbCd=\n'
+        'Address = 10.7.0.2/32\n'
+        '[Peer]\n'
+        'PublicKey = ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210ZyXw=\n'
+        'Endpoint = vpn.example.com:51820\n'
+        'PersistentKeepalive = $ka\n';
+    Map peerOf(String ka) => ((ShareLink.parseSubscription(conf(ka)).first.config!
+        ['endpoints'] as List).first as Map)['peers'][0] as Map;
+    expect(peerOf('15')['persistent_keepalive_interval'], 15); // honoured
+    // An EXPLICIT 0 is the author's deliberate choice → honoured, NOT forced to 25
+    // (only an ABSENT key defaults to 25, covered by the test above).
+    expect(peerOf('0')['persistent_keepalive_interval'], 0);
+    // garbage → the 25s default
+    expect(peerOf('abc')['persistent_keepalive_interval'], 25);
   });
 }

@@ -1,10 +1,18 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'censorship_facts.dart';
 import 'core_controller.dart';
 import 'singbox_config.dart';
+
+/// DEV-ONLY preview switch: force a fake "update available" so the Home banner and
+/// the Settings → About row can be seen in a debug build without a real newer
+/// release. Has NO effect in release (the kDebugMode guard). Set back to false
+/// when done previewing.
+const _debugForceUpdate = false;
 
 /// A newer release than the running build.
 class UpdateInfo {
@@ -24,16 +32,33 @@ const _releasesPage = 'https://github.com/Danya-byte/vpn-app/releases/latest';
 /// learns about a fix once they're connected, which is exactly when they can
 /// download it). Returns null when up to date, disconnected, or unreachable.
 final updateProvider = FutureProvider<UpdateInfo?>((ref) async {
+  if (kDebugMode && _debugForceUpdate) {
+    return const UpdateInfo(version: 'v1.0.4', url: _releasesPage);
+  }
   final on = ref.watch(
       coreControllerProvider.select((s) => s.status == CoreStatus.running));
   if (!on) return null; // only meaningful with a working tunnel
   try {
     final tag = await _latestTag();
-    if (tag != null && isNewerVersion(tag, _currentVersion)) {
-      return UpdateInfo(version: tag, url: _releasesPage);
+    // A non-null tag is AUTHORITATIVE: GitHub answered, so trust it and stop —
+    // never let the (lower-trust) facts feed override a real "up to date". Only a
+    // null tag (non-200 / missing tag_name, i.e. GitHub unreachable or unusable)
+    // falls through to the feed fallback.
+    if (tag != null) {
+      return isNewerVersion(tag, _currentVersion)
+          ? UpdateInfo(version: tag, url: _releasesPage)
+          : null;
     }
   } catch (_) {
-    // network/parse failure -> treat as "no update info"
+    // network/parse failure -> fall through to the feed fallback below
+  }
+  // Fallback when GitHub is blocked even through the tunnel: the data-only,
+  // clamped facts feed still gets through and can carry the newest version.
+  // NOTIFY ONLY — the user is sent to the signed release page; nothing is ever
+  // auto-downloaded or run (that would be the MITM vector this app guards against).
+  final feedV = CensorshipFacts.active.latestVersion;
+  if (feedV.isNotEmpty && isNewerVersion(feedV, _currentVersion)) {
+    return UpdateInfo(version: feedV, url: _releasesPage);
   }
   return null;
 });

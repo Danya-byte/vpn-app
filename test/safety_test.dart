@@ -239,7 +239,10 @@ void main() {
       final cfg = SingBoxConfig.withTun(base(), forceApps: ['discord.exe']);
       final rules = ((cfg['route'] as Map)['rules'] as List).cast<Map>();
       final hijackAt = rules.indexWhere((r) => r['action'] == 'hijack-dns');
-      final appAt = rules.indexWhere((r) => r.containsKey('process_name'));
+      // The probe rule is process-scoped now too (to vpn_app.exe), so locate the
+      // discord rule specifically rather than the first process_name rule.
+      final appAt = rules.indexWhere(
+          (r) => (r['process_name'] as List?)?.contains('discord.exe') ?? false);
       expect(hijackAt, isNonNegative);
       expect(appAt, greaterThan(hijackAt),
           reason: 'a process rule before hijack-dns kills the app\'s DNS');
@@ -252,7 +255,8 @@ void main() {
       final cfg = SingBoxConfig.withTun(base(), splitApps: ['game.exe']);
       final rules = ((cfg['route'] as Map)['rules'] as List).cast<Map>();
       final hijackAt = rules.indexWhere((r) => r['action'] == 'hijack-dns');
-      final appAt = rules.indexWhere((r) => r.containsKey('process_name'));
+      final appAt = rules.indexWhere(
+          (r) => (r['process_name'] as List?)?.contains('game.exe') ?? false);
       expect(appAt, greaterThan(hijackAt));
       expect(rules[appAt]['outbound'], 'direct');
     });
@@ -268,6 +272,59 @@ void main() {
               'system IPv6 is pulled into the tunnel instead of going direct');
       expect(addrs.any((a) => a.startsWith('172.')), isTrue,
           reason: 'the IPv4 TUN range is still present');
+    });
+
+    test('routes the whitelist-probe IPs DIRECT, after hijack-dns (#3)', () {
+      // In TUN, auto_route captures the controller's own raw foreign dial too, so
+      // a dark tunnel would eat the probe and false-latch "whitelist mode". The
+      // probe IPs must be pinned DIRECT so the dial measures the PHYSICAL uplink.
+      final cfg = SingBoxConfig.withTun(base());
+      final rules = ((cfg['route'] as Map)['rules'] as List).cast<Map>();
+      final hijackAt = rules.indexWhere((r) => r['action'] == 'hijack-dns');
+      final probeAt = rules.indexWhere((r) {
+        final ips = r['ip_cidr'];
+        return ips is List && ips.contains('8.8.8.8/32');
+      });
+      expect(probeAt, greaterThan(hijackAt),
+          reason: 'probe rule must sit after hijack-dns (so DNS still works) '
+              'and before the geo/final rules (so it wins)');
+      final probe = rules[probeAt];
+      expect(probe['outbound'], 'direct');
+      for (final ip in SingBoxConfig.foreignProbeIps) {
+        expect((probe['ip_cidr'] as List), contains('$ip/32'));
+      }
+      // SCOPED to our OWN process — otherwise EVERY app's traffic to these public
+      // DNS IPs (a DoH browser pointed at 8.8.8.8) would egress DIRECT, leaking the
+      // real IP past the tunnel in TUN. Only the watchdog's own probe may escape.
+      expect(probe['process_name'], contains('vpn_app.exe'),
+          reason: 'probe-direct must be limited to vpn_app.exe, not all traffic');
+    });
+
+    test('still routes probe IPs direct even when the config lacks a direct '
+        'outbound (creates one)', () {
+      final noDirect = {
+        'outbounds': [
+          {'type': 'vless', 'tag': 'proxy', 'server': '1.2.3.4'},
+        ],
+        'route': {
+          'rules': [
+            {'action': 'sniff'},
+            {'protocol': 'dns', 'action': 'hijack-dns'},
+          ],
+          'final': 'proxy',
+        },
+      };
+      final cfg = SingBoxConfig.withTun(noDirect);
+      final outs = (cfg['outbounds'] as List).cast<Map>();
+      expect(outs.any((o) => o['type'] == 'direct'), isTrue,
+          reason: 'a direct outbound must exist for the probe rule to reference');
+      final rules = ((cfg['route'] as Map)['rules'] as List).cast<Map>();
+      expect(
+          rules.any((r) =>
+              r['ip_cidr'] is List &&
+              (r['ip_cidr'] as List).contains('9.9.9.9/32') &&
+              r['outbound'] == 'direct'),
+          isTrue);
     });
   });
 }

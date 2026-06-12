@@ -51,7 +51,45 @@ class AppLocalizationsEn extends AppLocalizations {
   String get profiles => 'Profiles';
 
   @override
-  String get profilesEmpty => 'Empty. Paste a link or subscription below.';
+  String get profilesEmpty =>
+      'No servers yet. Paste a link, scan a QR, or open a file.';
+
+  @override
+  String get clipboardOfferText => 'A server link is on your clipboard';
+
+  @override
+  String fastestServer(String tag) {
+    return 'Fastest: $tag';
+  }
+
+  @override
+  String get noReachableServer => 'No server is reachable from here';
+
+  @override
+  String get diagDesyncOfferText =>
+      'These sites are throttled by TLS-DPI — the server-less bypass can open them with no server.';
+
+  @override
+  String get diagDesyncOfferAction => 'Enable server-less bypass';
+
+  @override
+  String get diagDesyncOfferDone => 'Server-less DPI bypass enabled';
+
+  @override
+  String get renameAction => 'Rename';
+
+  @override
+  String get renameInvalid => 'Name is empty or already taken';
+
+  @override
+  String get hardNetworkCtaText =>
+      'Not connecting? Mobile operators block harder than Wi-Fi.';
+
+  @override
+  String get hardNetworkCtaAction => 'Make it work';
+
+  @override
+  String get hardNetworkCtaDone => 'Hard-network mode on — reconnecting';
 
   @override
   String get noProfile => 'No profile';
@@ -210,6 +248,46 @@ class AppLocalizationsEn extends AppLocalizations {
       'Fragments the TLS handshake to beat SNI-based DPI. Slightly slower.';
 
   @override
+  String get maxResistTitle => 'Hard-network mode (mobile operator)';
+
+  @override
+  String get maxResistDesc =>
+      'Mobile networks block far harder than Wi-Fi. Forces TLS fragmentation ON and keeps the survivor-preferring cascade active, regardless of the other switches. Turn on when it works on Wi-Fi but not on mobile.';
+
+  @override
+  String get desyncTitle => 'Unblock without a server';
+
+  @override
+  String get desyncDesc =>
+      'A packet-level engine that rewrites the outgoing TLS handshake so the censor can\'t read the site name (SNI) — unblocks throttled / TLS-DPI sites (YouTube, Discord, Rutracker…) with NO server. Needs administrator (loads a network driver). Doesn\'t help IP-blocked sites (Telegram, X) — those still need a server.';
+
+  @override
+  String get desyncActive => 'DPI bypass active';
+
+  @override
+  String get desyncNeedsAdmin =>
+      'Needs administrator — restart elevated to load the bypass driver.';
+
+  @override
+  String get desyncMissing =>
+      'Engine not installed — put winws.exe + WinDivert in core\\windows.';
+
+  @override
+  String get desyncIdle => 'Engages when you connect.';
+
+  @override
+  String get desyncStrategyLabel => 'Method';
+
+  @override
+  String get desyncStratFakeSplit => 'Split+fake';
+
+  @override
+  String get desyncStratFakeDisorder => 'Disorder';
+
+  @override
+  String get desyncStratSplit => 'Split';
+
+  @override
   String get autoFailoverTitle => 'Auto-failover';
 
   @override
@@ -240,6 +318,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get vpnModeProxyDesc =>
       'Only browsers and proxy-aware apps go through the tunnel — no admin needed. Other apps and their DNS go DIRECT (real IP exposed). For full protection use TUN mode.';
+
+  @override
+  String get proxyAppsHint =>
+      'Apps that ignore the system proxy — Telegram desktop & its calls, CLI tools — only ride the tunnel in TUN mode.';
 
   @override
   String get vpnModeTunDesc =>
@@ -294,9 +376,6 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get onboardBody =>
       'Drop a QR or config file, paste a share link, or open a file — then tap connect.';
-
-  @override
-  String get onboardAdd => 'Add a server';
 
   @override
   String get setupTitle => 'Choose your protection';
@@ -450,6 +529,13 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get updateNow => 'Update';
+
+  @override
+  String get updateBannerHint =>
+      'Open the release page to download the new version.';
+
+  @override
   String get serverGenChainToggle => 'Domestic-relay chain (2 VPS)';
 
   @override
@@ -521,7 +607,48 @@ class AppLocalizationsEn extends AppLocalizations {
   String get vDown => 'Down';
 
   @override
-  String get tlsFpTitle => 'TLS fingerprint (uTLS)';
+  String get serverDiagRun => 'Diagnose my server';
+
+  @override
+  String get serverDiagTunHint =>
+      'Disconnect (or use proxy mode) to test — TUN captures the probe';
+
+  @override
+  String get serverDiagHint =>
+      'Probes your selected server raw (bypassing the tunnel) to show where the connection breaks here — for when it works on Wi-Fi but not on mobile.';
+
+  @override
+  String get serverDiagHeader => 'My server(s)';
+
+  @override
+  String get serverDiagNone => 'Select a server first.';
+
+  @override
+  String get serverDiagCopy => 'Copy report';
+
+  @override
+  String get serverDiagCopied => 'Diagnostic report copied';
+
+  @override
+  String get svReachableL4 => 'reaches (L4 OK)';
+
+  @override
+  String get svServerBlocked => 'IP/port blocked';
+
+  @override
+  String get svWhitelist => 'whitelist — foreign dark';
+
+  @override
+  String get svUdpInconclusive => 'UDP — can\'t probe';
+
+  @override
+  String get svDnsInconclusive => 'DNS unclear — can\'t verify';
+
+  @override
+  String get svOffline => 'Offline';
+
+  @override
+  String get tlsFpTitle => 'Browser fingerprint';
 
   @override
   String get tlsFpDesc =>
@@ -680,7 +807,191 @@ class AppLocalizationsEn extends AppLocalizations {
   String get splitTunnelHint => 'process.exe';
 
   @override
+  String get splitCommonApps => 'Common apps:';
+
+  @override
   String get splitTunnelEmpty => 'None';
+
+  @override
+  String get tunOnlyHint => 'Works only in TUN mode.';
+
+  @override
+  String get customRulesTitle => 'Custom routing rules';
+
+  @override
+  String get customRulesDesc =>
+      'Force specific destinations through the tunnel, keep them direct, or block them. These win over Smart routing. Match a domain (and its sub-domains), an exact host, or an IP/CIDR.';
+
+  @override
+  String get customRulesEmpty => 'No rules — Smart routing decides everything';
+
+  @override
+  String get customRulesValueHint => 'openai.com  or  1.2.3.4/24';
+
+  @override
+  String get transportBlockedWarn =>
+      'This transport (e.g. plain WireGuard / Shadowsocks) is widely blocked in Russia — prefer Reality, Hysteria2 or XHTTP.';
+
+  @override
+  String get fakeIpTitle => 'Faster DNS (TUN)';
+
+  @override
+  String get fakeIpDesc =>
+      'Answer apps instantly with a placeholder address and resolve the real one at the exit — cuts first-load lag in TUN mode and avoids DNS leaks. Experimental; turn off if a site won\'t open.';
+
+  @override
+  String get advancedTitle => 'Expert transport';
+
+  @override
+  String get advancedDesc =>
+      'Expert transport knobs. Leave default unless you know you need them.';
+
+  @override
+  String get tunStackTitle => 'TUN network stack';
+
+  @override
+  String get tunStackDesc =>
+      'gVisor is the safe default; system/mixed lower overhead but lean on the OS stack.';
+
+  @override
+  String get muxProtoTitle => 'Multiplex protocol (needs multiplex on)';
+
+  @override
+  String get muxPaddingTitle => 'Multiplex padding';
+
+  @override
+  String get muxPaddingDesc => 'Pad multiplexed streams to hide their sizes.';
+
+  @override
+  String get echTitle => 'Encrypted ClientHello (ECH)';
+
+  @override
+  String get echDesc =>
+      'Hide the TLS server name on non-Reality nodes. Needs server ECH support — turn off if a node won\'t connect.';
+
+  @override
+  String get ecsTitle => 'DNS Client Subnet (ECS)';
+
+  @override
+  String get ecsDesc =>
+      'Send resolvers a subnet for better CDN locality. Empty = off.';
+
+  @override
+  String get ecsHint => 'e.g. 1.2.3.0/24';
+
+  @override
+  String get ecsInvalid => 'Invalid subnet — use a form like 1.2.3.0/24';
+
+  @override
+  String get tfoTitle => 'TCP Fast Open';
+
+  @override
+  String get tfoDesc =>
+      'Saves ~1 RTT on connect. Off by default — can break some servers and mobile-operator paths in Russia.';
+
+  @override
+  String get mptcpTitle => 'Multipath TCP';
+
+  @override
+  String get mptcpDesc =>
+      'Use multiple network paths when the server supports it. Advanced.';
+
+  @override
+  String get shareImportTitle => 'Imported shared setup';
+
+  @override
+  String get shareApplySettings => 'Apply the sender\'s protection settings';
+
+  @override
+  String get shareApplySettingsDesc =>
+      'DPI bypass, per-app routing and rules from the share — only if you trust the sender.';
+
+  @override
+  String get shareAutoUpdateNote =>
+      'This profile auto-updates from the sender\'s link.';
+
+  @override
+  String get shareTitle => 'Share';
+
+  @override
+  String get shareForAnyClient => 'For any app';
+
+  @override
+  String get shareForAnyClientDesc =>
+      'Standard links any VPN client can import — servers only, no settings.';
+
+  @override
+  String get shareWithSettings => 'With my settings';
+
+  @override
+  String get shareWithSettingsDesc =>
+      'Our app only — also shares your DPI bypass + routing setup.';
+
+  @override
+  String get shareCopied => 'Link copied to clipboard';
+
+  @override
+  String get shareCopyLink => 'Copy link';
+
+  @override
+  String get shareNothing => 'Nothing to share yet — add a server first.';
+
+  @override
+  String get shareNoUniversal =>
+      'These profiles are whole configs — standard links can\'t carry them. Use \"With my settings\" instead.';
+
+  @override
+  String get customRulesInvalid => 'Invalid domain or IP — not added';
+
+  @override
+  String get customRulesLiveNote =>
+      'Changes apply immediately and briefly reconnect an active tunnel.';
+
+  @override
+  String get ruleFieldDomainSuffix => 'Domain';
+
+  @override
+  String get ruleFieldDomain => 'Exact host';
+
+  @override
+  String get ruleFieldIpCidr => 'IP / CIDR';
+
+  @override
+  String get ruleActionProxy => 'Proxy';
+
+  @override
+  String get ruleActionDirect => 'Direct';
+
+  @override
+  String get ruleActionBlock => 'Block';
+
+  @override
+  String get webdavTitle => 'Cloud sync (WebDAV)';
+
+  @override
+  String get webdavDesc =>
+      'Back up and sync your profiles to your own WebDAV cloud (Nextcloud, Koofr, box.com, …). Enter the full file URL. The password is stored locally on this device.';
+
+  @override
+  String get webdavUrlHint => 'https://dav.example.com/vpn/profiles.json';
+
+  @override
+  String get webdavUserLabel => 'Username';
+
+  @override
+  String get webdavPassLabel => 'Password';
+
+  @override
+  String get webdavBackup => 'Back up';
+
+  @override
+  String get webdavRestore => 'Restore';
+
+  @override
+  String get webdavBackedUp => 'Profiles backed up to cloud';
+
+  @override
+  String get syncError => 'Sync error';
 
   @override
   String get brutalTitle => 'Hysteria2 speed (Brutal)';
@@ -709,7 +1020,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get dnsHint => 'e.g. 1.1.1.1 or dns.google';
 
   @override
-  String get killSwitchTitle => 'TUN kill-switch (experimental)';
+  String get dnsInvalid =>
+      'Enter a DNS server address — an IP or host, not a URL.';
+
+  @override
+  String get dnsApplyHint => 'Press Enter to apply while connected.';
+
+  @override
+  String get killSwitchTitle => 'Block on drop (TUN)';
 
   @override
   String get killSwitchDesc =>

@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/app_settings.dart';
 import '../../../core/core_controller.dart';
 import '../../../core/profiles_controller.dart';
 import '../../../l10n/app_localizations.dart';
@@ -31,10 +32,18 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
         status == CoreStatus.stopped || status == CoreStatus.error;
     if (connecting) {
       final node = ref.read(profilesProvider).selectedNode;
-      if (node != null && node.insecure) {
+      // Ask the MITM consent ONCE per insecure node, then remember it — the
+      // user's #4 complaint was being re-prompted on every single connect.
+      if (node != null &&
+          node.insecure &&
+          !ref
+              .read(settingsProvider)
+              .insecureAccepted
+              .contains(node.insecureKey)) {
         final go = await showGlassDialog<bool>(context,
             child: const _InsecureConnectConsent());
         if (go != true || !mounted) return;
+        ref.read(settingsProvider.notifier).acceptInsecure(node.insecureKey);
       }
     }
     notifier.toggle();
@@ -45,7 +54,14 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
     // Watch ONLY the status — not the whole CoreState — so this big button (with
     // a BackdropFilter) doesn't rebuild on every appended log line / detail change.
     final status = ref.watch(coreControllerProvider.select((s) => s.status));
+    final swapping = ref.watch(coreControllerProvider.select((s) => s.swapping));
+    // A seamless swap (node-switch / network / settings restart): the proxy stays
+    // pinned, so keep the calm look (no red spinner) + an amber "Checking…".
+    final swap = status == CoreStatus.starting && swapping;
     final isOn = status == CoreStatus.running;
+    // A swap shows a spinner too (so the button never looks idle mid-swap), but in
+    // amber + with the "Checking…" ring/label so it reads as a calm re-check, not a
+    // fresh red "Connecting…".
     final isBusy =
         status == CoreStatus.starting || status == CoreStatus.stopping;
     final scheme = Theme.of(context).colorScheme;
@@ -63,21 +79,25 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
 
     // Distinct ring per state so "Connecting" / "Disconnecting" don't read as
     // idle (they previously fell through to the default white branch).
-    final Color ring = switch (status) {
-      CoreStatus.running => scheme.primary,
-      CoreStatus.error => scheme.error,
-      CoreStatus.starting => scheme.primary.withValues(alpha: 0.6),
-      CoreStatus.stopping => Colors.white.withValues(alpha: 0.5),
-      CoreStatus.stopped => Colors.white.withValues(alpha: 0.28),
-    };
+    final Color ring = swap
+        ? const Color(0xFFE0A53D)
+        : switch (status) {
+            CoreStatus.running => scheme.primary,
+            CoreStatus.error => scheme.error,
+            CoreStatus.starting => scheme.primary.withValues(alpha: 0.6),
+            CoreStatus.stopping => Colors.white.withValues(alpha: 0.5),
+            CoreStatus.stopped => Colors.white.withValues(alpha: 0.28),
+          };
 
-    final String label = switch (status) {
-      CoreStatus.running => l.statusConnected,
-      CoreStatus.starting => l.statusConnecting,
-      CoreStatus.stopping => l.statusDisconnecting,
-      CoreStatus.error => l.statusError,
-      CoreStatus.stopped => l.statusDisconnected,
-    };
+    final String label = swap
+        ? l.statusChecking
+        : switch (status) {
+            CoreStatus.running => l.statusConnected,
+            CoreStatus.starting => l.statusConnecting,
+            CoreStatus.stopping => l.statusDisconnecting,
+            CoreStatus.error => l.statusError,
+            CoreStatus.stopped => l.statusDisconnected,
+          };
 
     return Semantics(
       button: true,
@@ -130,31 +150,15 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
                 child: Stack(
                   alignment: Alignment.center,
                   children: [
-                    // Specular catch-light near the crown of the dome.
-                    Positioned(
-                      top: 22,
-                      child: IgnorePointer(
-                        child: Container(
-                          width: 96,
-                          height: 34,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(40),
-                            gradient: RadialGradient(
-                              colors: [
-                                Colors.white.withValues(alpha: 0.30),
-                                Colors.white.withValues(alpha: 0.0),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
                     isBusy
                         ? SizedBox(
                             width: 44,
                             height: 44,
                             child: CircularProgressIndicator(
-                                strokeWidth: 3, color: scheme.primary),
+                                strokeWidth: 3,
+                                color: swap
+                                    ? const Color(0xFFE0A53D)
+                                    : scheme.primary),
                           )
                         : Icon(Icons.power_settings_new_rounded,
                             size: 72, color: ring),

@@ -135,6 +135,18 @@ class ShareLink {
     List<String> csv(String? v, String fallback) => (v == null || v.isEmpty)
         ? [fallback]
         : v.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    // WireGuard's famed "stays up for days" behaviour leans on PersistentKeepalive
+    // (it keeps the NAT mapping open + lets the peer notice the link is alive).
+    // If the key is ABSENT, default to WG's standard 25s so the tunnel stays alive
+    // (many shared confs omit it and then "randomly drop"). But an EXPLICIT value —
+    // including a deliberate 0 (disabled) — is the conf author's choice and is
+    // HONOURED, not overridden (don't mutate an imported credential's on-wire
+    // behaviour without consent). Garbage parses back to the 25s default.
+    final kaKey = peer['persistentkeepalive'];
+    // Clamp to WG's valid range: a negative / huge value ("-5", "99999") would be
+    // emitted verbatim into persistent_keepalive_interval and FATAL the core.
+    final keepalive =
+        (kaKey == null ? 25 : (int.tryParse(kaKey) ?? 25)).clamp(0, 65535);
     final ep = <String, dynamic>{
       'type': 'wireguard',
       'tag': 'wg',
@@ -146,6 +158,7 @@ class ShareLink {
           'port': port,
           'public_key': pub,
           'allowed_ips': csv(peer['allowedips'], '0.0.0.0/0'),
+          'persistent_keepalive_interval': keepalive,
           if ((peer['presharedkey'] ?? '').isNotEmpty)
             'pre_shared_key': peer['presharedkey'],
         }
@@ -532,6 +545,39 @@ class ShareLink {
     if (obfs != null && obfs.isNotEmpty) {
       ob['obfs'] = {'type': obfs, 'password': p['obfs-password'] ?? ''};
     }
+    // Port-hopping / multi-port: `mport` carries a port spec like "20000-21000"
+    // or "443,8443" (the Hysteria share-link convention). sing-box wants a
+    // `server_ports` array with ranges colon-separated, rotating every
+    // `hop_interval` (default 30s). When present it REPLACES the single port.
+    final mport = (p['mport'] ?? p['ports'] ?? '').trim();
+    if (mport.isNotEmpty) {
+      // Validate each entry to a real port range — sing-box FATALs on an out-of-
+      // range or reversed range ("70000-80000", "8443-443"), which would strip the
+      // valid single port and leave a silently-dead node. Bad entries are dropped;
+      // if NONE survive, keep the single server_port. Every kept entry is "N:N"…"a:b"
+      // (sing-box rejects a bare "N" in server_ports).
+      final ports = <String>[];
+      for (final part in mport.split(',')) {
+        final m =
+            RegExp(r'^(\d+)(?:[:-](\d+))?$').firstMatch(part.trim());
+        if (m == null) continue;
+        final a = int.tryParse(m.group(1)!);
+        final b = m.group(2) != null ? int.tryParse(m.group(2)!) : a;
+        if (a == null || b == null) continue;
+        if (a < 1 || a > 65535 || b < 1 || b > 65535 || a > b) continue;
+        ports.add('$a:$b');
+      }
+      if (ports.isNotEmpty) {
+        ob.remove('server_port');
+        ob['server_ports'] = ports;
+        final hop = (p['hop_interval'] ?? p['hop-interval'] ?? '').trim();
+        // Accept "30s"/"500ms"/"2m"… or a bare POSITIVE integer (seconds); a bare
+        // "0" or junk falls back to 30s (a 0s interval is degenerate).
+        ob['hop_interval'] = RegExp(r'^[1-9]\d*(ms|s|m|h)$').hasMatch(hop)
+            ? hop
+            : (RegExp(r'^[1-9]\d*$').hasMatch(hop) ? '${hop}s' : '30s');
+      }
+    }
     return ParsedNode(tag: name, outbound: ob);
   }
 
@@ -697,6 +743,18 @@ class ShareLink {
         if ((p['path'] ?? '').isNotEmpty) t['path'] = p['path'];
         if ((p['host'] ?? '').isNotEmpty) t['host'] = p['host'];
         if ((p['mode'] ?? '').isNotEmpty) t['mode'] = p['mode'];
+        // xray XHTTP `extra` blob (scMaxEachPostBytes / scMinPostsIntervalMs /
+        // xPaddingBytes / xmux …) = the server's SPLIT tuning. Relay it faithfully
+        // (it's bridged to xray) so XHTTP behaves as the server intends — and the
+        // sub-16KB-freeze tuning the server chose actually applies — instead of
+        // silently falling back to xray defaults. Ignored if not valid JSON.
+        final extra = p['extra'];
+        if (extra != null && extra.isNotEmpty) {
+          try {
+            final d = jsonDecode(extra);
+            if (d is Map && d.isNotEmpty) t['extra'] = d.cast<String, dynamic>();
+          } catch (_) {}
+        }
         return t;
       default:
         return null; // tcp/none

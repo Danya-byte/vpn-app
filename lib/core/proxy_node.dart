@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// A proxy profile: either a single node (one sing-box outbound) or a full
 /// sing-box config imported to run as-is.
 class ParsedNode {
@@ -52,5 +54,63 @@ class ParsedNode {
       }
     }
     return false;
+  }
+
+  /// A STABLE per-server key for the insecure-MITM-consent memory — content-based,
+  /// NOT the user-renameable / attacker-controlled display [tag]. A subscription
+  /// that rotates the exit server behind the same name, or a re-import under a new
+  /// tag, yields a DIFFERENT key → the consent is re-asked instead of silently
+  /// inherited (audit #11). Simple nodes: `type://server:port` (port-hopping
+  /// hysteria2 carries `server_ports` instead of `server_port` — include the range
+  /// so two same-host pools don't collide into one consent). Configs: the sorted
+  /// `server:port` set of the INSECURE outbounds only — keying on every server let
+  /// the risky flag silently MOVE to another server in the same set without
+  /// re-asking (the consent must track the MITM-able endpoint, not the roster).
+  String get insecureKey {
+    String portOf(Map o) {
+      final p = o['server_port'];
+      if (p != null) return '$p';
+      final sp = o['server_ports'];
+      if (sp is List && sp.isNotEmpty) return sp.map((e) => '$e').join('|');
+      return '';
+    }
+
+    if (!isConfig) {
+      return '${outbound['type'] ?? ''}://'
+          '${outbound['server'] ?? ''}:${portOf(outbound)}';
+    }
+    bool risky(Map o) {
+      final tls = o['tls'];
+      return tls is Map && tls['insecure'] == true && tls['reality'] == null;
+    }
+
+    final servers = <String>{};
+    for (final key in const ['outbounds', 'endpoints']) {
+      for (final o in (config?[key] as List?) ?? const []) {
+        if (o is Map && o['server'] != null && risky(o)) {
+          servers.add('${o['server']}:${portOf(o)}');
+        }
+      }
+    }
+    final list = servers.toList()..sort();
+    // No risky outbound carries a server (rare: e.g. insecure under an endpoint
+    // shape we don't recognize) → fall back to a CONTENT hash, never the display
+    // tag: the tag is user-renameable / attacker-controlled, which would let a
+    // re-import inherit (or dodge) the consent by name alone.
+    return list.isEmpty
+        ? 'config:#${_fnv1a(jsonEncode(config))}'
+        : 'config:${list.join(',')}';
+  }
+
+  // FNV-1a 32-bit over the canonical-ish JSON — deterministic across runs/VMs
+  // (String.hashCode isn't guaranteed stable), no crypto dependency needed for a
+  // consent-memory key.
+  static int _fnv1a(String s) {
+    var h = 0x811c9dc5;
+    for (final c in s.codeUnits) {
+      h ^= c;
+      h = (h * 0x01000193) & 0xFFFFFFFF;
+    }
+    return h;
   }
 }

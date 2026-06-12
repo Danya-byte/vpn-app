@@ -20,6 +20,11 @@
 #if !FileExists(SourceDir + "\core\windows\sing-box.exe")
   #error Cores missing in SourceDir. Run tool\package.ps1 (or fetch-cores.ps1) before iscc.
 #endif
+; The desync engine (server-less DPI bypass) must ship too — without winws the
+; headline feature is permanently absent in the installed app (audit blocker #1).
+#if !FileExists(SourceDir + "\core\windows\winws.exe")
+  #error Desync engine missing. Run tool\fetch-cores.ps1 -IncludeXray -IncludeDesync before packaging.
+#endif
 
 [Setup]
 AppId={{A7E3C92F-4B81-4D6A-9C05-1E2F3A4B5C6D}
@@ -124,16 +129,37 @@ begin
   end;
 end;
 
+// Runs AFTER the user clicks Install, BEFORE any file is copied. A reinstall /
+// in-place update over a RUNNING app would otherwise hit file locks — most
+// critically winws.exe, which keeps the WinDivert kernel driver and its own files
+// locked. Kill the app + ALL cores first (mirrors the uninstall cleanup) so an
+// update can't fail with "file in use".
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  rc: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'),
+    '/F /IM vpn_app.exe /IM sing-box.exe /IM xray.exe /IM winws.exe /IM awg.exe',
+    '', SW_HIDE, ewWaitUntilTerminated, rc);
+  // Give WinDivert a moment to unload after winws dies so its files unlock.
+  Sleep(400);
+  Result := '';  // empty = proceed with installation
+end;
+
 procedure CurUninstallStepChanged(CurStep: TUninstallStep);
 var
   rc: Integer;
 begin
   if CurStep = usUninstall then
   begin
-    // Kill the app + cores BEFORE removing files: the dynamic WFP kill-switch
+    // Kill the app + ALL cores BEFORE removing files: the dynamic WFP kill-switch
     // fence auto-purges with the process, and the .exe/DLLs unlock for deletion.
+    // winws.exe MUST be here — it's the server-less desync sidecar this installer
+    // ships; if left running it keeps a WinDivert kernel driver loaded, locks its
+    // files against deletion, and keeps desyncing live traffic after uninstall.
+    // awg.exe is the (optional) AmneziaWG bridge, killed for the same reason.
     Exec(ExpandConstant('{sys}\taskkill.exe'),
-      '/F /IM vpn_app.exe /IM sing-box.exe /IM xray.exe',
+      '/F /IM vpn_app.exe /IM sing-box.exe /IM xray.exe /IM winws.exe /IM awg.exe',
       '', SW_HIDE, ewWaitUntilTerminated, rc);
     RestoreUserProxy(); // BEFORE deleting BakKey (it reads the backup)
     // Remove app-written HKCU keys: proxy backup, link/scheme handlers, autostart.

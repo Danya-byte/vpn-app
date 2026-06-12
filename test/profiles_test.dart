@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vpn_app/core/profile_store.dart';
 import 'package:vpn_app/core/profiles_controller.dart';
+import 'package:vpn_app/core/proxy_node.dart';
+import 'package:vpn_app/core/share_link_encoder.dart';
 
 void main() {
   // Never touch the real user profile store from tests.
@@ -36,6 +38,32 @@ void main() {
     expect(state.nodes.length, 2);
     expect(state.selectedNode, isNotNull);
     expect(state.selectedNode!.tag, 'A');
+  });
+
+  test('importText recognizes a vpn://share bundle pasted as text', () {
+    // Regression: a user pasting a vpn://share link into the manual import dialog
+    // got "nothing recognized" because importText only knew standard links — it
+    // now decodes our own bundle scheme too (every importText caller benefits).
+    final c = ProviderContainer();
+    addTearDown(c.dispose);
+    final notifier = c.read(profilesProvider.notifier);
+    notifier.clear();
+
+    final cfgNode = ParsedNode(tag: '🌍 VPN', outbound: const {}, config: {
+      'outbounds': [
+        {'tag': '🌍 VPN', 'type': 'selector', 'outbounds': ['n1']},
+        {'tag': 'n1', 'type': 'vless', 'server': '1.2.3.4', 'server_port': 443, 'uuid': 'u'},
+      ],
+      'route': {'final': '🌍 VPN'},
+    });
+    final link = ShareLinkEncoder.encodeBundle(nodes: [cfgNode]);
+
+    final r = notifier.importText(link);
+    expect(r.recognized, isTrue);
+    expect(r.added, 1);
+    final node = c.read(profilesProvider).nodes.single;
+    expect(node.isConfig, isTrue);
+    expect(node.tag, '🌍 VPN');
   });
 
   test('subscription source is tagged on imported nodes', () {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show File;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -13,6 +14,7 @@ import '../../l10n/app_localizations.dart';
 import '../../widgets/glass.dart';
 import '../activity/activity_page.dart';
 import '../home/home_page.dart';
+import '../home/widgets/clipboard_offer.dart';
 import '../home/widgets/import_actions.dart';
 import '../onboarding/first_run_setup.dart';
 import '../settings/settings_page.dart';
@@ -28,6 +30,12 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
   static const _dropChannel = MethodChannel('app/files');
   int _index = 0;
   OverlayEntry? _dragEntry;
+  // Synchronous re-entrancy latch for the deferred first-run chooser. seenSetup is
+  // only persisted AFTER the dialog is dismissed, so a restart() that flaps isOn
+  // false→true while the dialog is still open would re-fire the listener and stack
+  // a SECOND dialog (the seenSetup guard hasn't flipped yet). Latched the instant
+  // the edge fires, closing that window.
+  bool _setupShown = false;
 
   void _showDragOverlay() {
     if (_dragEntry != null || !mounted) return;
@@ -79,17 +87,22 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
           ref.read(coreControllerProvider.notifier).onNetworkChanged();
         case 'resumed':
           ref.read(coreControllerProvider.notifier).onResumed();
+          // Window regained focus — the user may have just copied a server link.
+          peekClipboardForImport(ref);
         case 'deeplink':
           // Warm-start: a second instance forwarded a clicked link/file (native
           // WM_COPYDATA). Same untrusted path as a cold-launch deeplink.
           final payload = call.arguments as String?;
           final p = payload == null ? null : importablePayload(payload);
           if (p != null && mounted) {
-            if (p.contains('://')) {
+            // File ONLY when the payload IS an existing file ("Open with") —
+            // an unwrapped opaque blob (base64 subscription) has no '://' either
+            // and must go down the CONTENT path, not File().readAsBytes().
+            if (!p.contains('://') && File(p).existsSync()) {
+              await importFromFile(context, ref, p, trusted: false);
+            } else {
               await importDroppedContent(context, ref, utf8.encode(p),
                   trusted: false);
-            } else {
-              await importFromFile(context, ref, p, trusted: false);
             }
           }
       }
@@ -108,26 +121,44 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
         if (!mounted) return;
         // Cold-launch deeplink: the payload came from OUTSIDE the app (a clicked
         // link / "Open with"), so it's untrusted — preview-gate before connect.
-        if (pending.contains('://')) {
+        // Same file-vs-content routing as the warm-start path above.
+        if (!pending.contains('://') && File(pending).existsSync()) {
+          await importFromFile(context, ref, pending, trusted: false);
+        } else {
           await importDroppedContent(context, ref, utf8.encode(pending),
               trusted: false);
-        } else {
-          await importFromFile(context, ref, pending, trusted: false);
         }
       });
-    } else if (!ref.read(settingsProvider).seenSetup) {
-      // First run (and no cold-launch import to handle first): let the user choose
-      // their protection mode instead of silently landing on the leak-prone proxy
-      // default (#4). One-time — completeSetup() flips seenSetup.
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        if (!mounted) return;
-        await showFirstRunSetup(context, ref);
+    } else {
+      // No cold-launch import: peek the clipboard once so a freshly-copied server
+      // link surfaces as a one-tap Home banner. The first-run TUN-vs-proxy chooser
+      // is DEFERRED to AFTER the first successful connect (see build()'s listener),
+      // so a newcomer isn't asked a security question before they even have a
+      // server — they connect on the safe default first, then get the upgrade offer.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) peekClipboardForImport(ref);
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Deferred first-run: offer the TUN-vs-proxy upgrade AFTER the first successful
+    // connect (not before the user even has a server). One-time — completeSetup()
+    // flips seenSetup so it never re-fires.
+    ref.listen(coreControllerProvider.select((s) => s.isOn), (prev, next) {
+      if (next == true &&
+          prev != true &&
+          !_setupShown &&
+          !ref.read(settingsProvider).seenSetup) {
+        _setupShown = true; // latch synchronously, before the await window opens
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (mounted && !ref.read(settingsProvider).seenSetup) {
+            await showFirstRunSetup(context, ref);
+          }
+        });
+      }
+    });
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Stack(
@@ -256,7 +287,9 @@ class _GlassNav extends StatefulWidget {
 
 class _GlassNavState extends State<_GlassNav> {
   static const List<IconData> _icons = [
-    Icons.power_settings_new_rounded,
+    // Home = a shield (the product is protection), NOT the power glyph — that one
+    // is the big Connect button, and sharing it made the Home tab read as "connect".
+    Icons.shield_rounded,
     Icons.insights_rounded,
     Icons.settings_rounded,
   ];

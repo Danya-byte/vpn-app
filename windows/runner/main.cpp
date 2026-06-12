@@ -10,6 +10,19 @@
 
 #pragma comment(lib, "shell32.lib")
 
+// A DEBUG build is an isolated "dev instance": a distinct single-instance mutex
+// and window title so a freshly-built dev copy runs ALONGSIDE an installed
+// release client (which uses the unsuffixed names) instead of being swallowed by
+// its single-instance guard. Release builds are unchanged. Mirrors the Dart-side
+// run_dev store split (CorePaths._devInstance).
+#ifdef NDEBUG
+constexpr wchar_t kMutexName[] = L"vpn_app_single_instance";
+constexpr wchar_t kWindowTitle[] = L"vpn_app";
+#else
+constexpr wchar_t kMutexName[] = L"vpn_app_single_instance_dev";
+constexpr wchar_t kWindowTitle[] = L"vpn_app_dev";
+#endif
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   // Single instance: a second copy would fight over the local proxy ports
@@ -23,14 +36,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
     ::SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE);  // everyone
     SECURITY_ATTRIBUTES sa = {sizeof(sa), &sd, FALSE};
-    ::CreateMutexW(&sa, TRUE, L"vpn_app_single_instance");
+    ::CreateMutexW(&sa, TRUE, kMutexName);
     // A deliberate "restart as administrator" relaunch must run even though the
     // outgoing (non-elevated) copy is still alive — it still grabs a handle so
     // future normal launches stay blocked.
     const bool elevated_relaunch =
         command_line && ::wcsstr(command_line, L"--elevated-relaunch");
     if (!elevated_relaunch && ::GetLastError() == ERROR_ALREADY_EXISTS) {
-      HWND existing = ::FindWindowW(nullptr, L"vpn_app");
+      HWND existing = ::FindWindowW(nullptr, kWindowTitle);
       // Robustness: only act on a window that actually belongs to OUR exe — a
       // title match alone could land on an unrelated window titled "vpn_app".
       if (existing) {
@@ -104,7 +117,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(440, 700);
-  if (!window.Create(L"vpn_app", origin, size)) {
+  if (!window.Create(kWindowTitle, origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
