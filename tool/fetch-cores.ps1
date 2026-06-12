@@ -115,14 +115,22 @@ $wtDll = (Get-ChildItem -Recurse $wtDir -Filter $Wintun.Dll | Where-Object { $_.
 Install-Verified $wtDll $Wintun.Dll $Wintun.Sha
 
 # --- rule-sets (routing data: control direct-vs-proxy, so tampering = a LEAK) ---
-# Hash-pinned like the binaries. They DO update upstream - bumping one is a
-# deliberate, tested change: re-paste the new SHA-256 here when you update it.
+# Pinned to a FROZEN upstream COMMIT, NOT the rolling 'rule-set' branch HEAD: that
+# branch is rebuilt periodically, which silently drifted the SHA-256 and broke the
+# release build out of nowhere (the recurring "update the pin" failure). A commit's
+# bytes are immutable, so these hashes NEVER drift and CI can't break on an upstream
+# rebuild. To REFRESH the geo data later, bump BOTH the *Commit var and the Sha here
+# (run tool/update-rulesets.ps1 to print the new values) - a deliberate, non-breaking
+# change; the build still fails ONLY if a pinned commit's bytes don't match = real
+# tampering.
 $rsDir = Join-Path (Split-Path $Dest -Parent) 'rule-sets'
 New-Item -ItemType Directory -Force $rsDir | Out-Null
+$geoipCommit   = 'a508a0a09d30111e0ab5a0d9a3de1aff832d72b4'  # SagerNet/sing-geoip   rule-set branch
+$geositeCommit = 'e8f34a637657da66687232f0ff44becee58d473d'  # SagerNet/sing-geosite rule-set branch
 $ruleSets = @(
-  @{ Name = 'geoip-ru.srs';    Url = 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs';                 Sha = '133d045108290b7e1ea929e3021807ad1842876d959bfc5ae347fdc7db4b5865' },
-  @{ Name = 'geosite-ru.srs';  Url = 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs';     Sha = '181c98f830178f5e5ecd77b19c0c89dbc262b9800d8168bfe476a3a8bdf21bb5' },
-  @{ Name = 'geosite-ads.srs'; Url = 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs'; Sha = 'c35ecb467bc8029b68bf3b6a680a7ba66b0daf4fe9203f2104b6837fe1b8120e' }
+  @{ Name = 'geoip-ru.srs';    Url = "https://raw.githubusercontent.com/SagerNet/sing-geoip/$geoipCommit/geoip-ru.srs";                 Sha = '8bc18433e5d5b0644ba2a9ff74cd03428ba4f4e388b3c409f182de930e3c3170' },
+  @{ Name = 'geosite-ru.srs';  Url = "https://raw.githubusercontent.com/SagerNet/sing-geosite/$geositeCommit/geosite-category-ru.srs";     Sha = 'd0d92cd94d2df8d4657944a4abe6eeba4f405b86baa33ed46145b28de4fc247f' },
+  @{ Name = 'geosite-ads.srs'; Url = "https://raw.githubusercontent.com/SagerNet/sing-geosite/$geositeCommit/geosite-category-ads-all.srs"; Sha = 'e6ea6f446b33edc116c598b62216a5ca4292d8dd24ec9f8f44fdcb01b19d984e' }
 )
 foreach ($rs in $ruleSets) {
   $out = Join-Path $rsDir $rs.Name
