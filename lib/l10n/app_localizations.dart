@@ -596,6 +596,24 @@ abstract class AppLocalizations {
   /// **'Engages when you connect.'**
   String get desyncIdle;
 
+  /// No description provided for @desyncTryNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Try next method'**
+  String get desyncTryNext;
+
+  /// No description provided for @desyncTryingNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Trying the next bypass method — check if the site opens now'**
+  String get desyncTryingNext;
+
+  /// No description provided for @desyncNoMore.
+  ///
+  /// In en, this message translates to:
+  /// **'Tried every method — this site is likely IP-blocked (needs a server, not just desync)'**
+  String get desyncNoMore;
+
   /// No description provided for @desyncStrategyLabel.
   ///
   /// In en, this message translates to:
@@ -644,6 +662,78 @@ abstract class AppLocalizations {
   /// **'Refresh subscriptions'**
   String get refreshSubs;
 
+  /// No description provided for @pingAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Measure latency (no connection)'**
+  String get pingAll;
+
+  /// No description provided for @pingAllWhileOn.
+  ///
+  /// In en, this message translates to:
+  /// **'Measure before connecting — live latency is in Activity → Policies'**
+  String get pingAllWhileOn;
+
+  /// No description provided for @pinCertAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Pin certificate'**
+  String get pinCertAction;
+
+  /// No description provided for @pinCertTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Pin server certificate'**
+  String get pinCertTitle;
+
+  /// No description provided for @pinCertHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Paste the server\'s certificate (PEM, -----BEGIN CERTIFICATE-----…)'**
+  String get pinCertHint;
+
+  /// No description provided for @pinCertDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Certificate pinned — verification is on, no longer insecure'**
+  String get pinCertDone;
+
+  /// No description provided for @pinCertInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'That isn\'t a valid PEM certificate'**
+  String get pinCertInvalid;
+
+  /// No description provided for @pinCertMulti.
+  ///
+  /// In en, this message translates to:
+  /// **'This config has several insecure servers — per-server pinning isn\'t supported yet'**
+  String get pinCertMulti;
+
+  /// No description provided for @unpinCertAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove pinned certificate'**
+  String get unpinCertAction;
+
+  /// No description provided for @unpinCertConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove the pinned certificate? The server goes back to no-verification (insecure) until you pin the correct one.'**
+  String get unpinCertConfirm;
+
+  /// No description provided for @unpinCertDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Pinned certificate removed'**
+  String get unpinCertDone;
+
+  /// No description provided for @pinnedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'verified'**
+  String get pinnedBadge;
+
   /// No description provided for @subsUpToDate.
   ///
   /// In en, this message translates to:
@@ -683,8 +773,14 @@ abstract class AppLocalizations {
   /// No description provided for @proxyAppsHint.
   ///
   /// In en, this message translates to:
-  /// **'Apps that ignore the system proxy — Telegram desktop & its calls, CLI tools — only ride the tunnel in TUN mode.'**
+  /// **'Apps that ignore the system proxy — Telegram desktop & its calls, CLI tools — only ride the tunnel in TUN mode, OR point their own SOCKS5 proxy at the address below (Telegram: Settings → Advanced → Connection type → SOCKS5 — this carries calls too).'**
   String get proxyAppsHint;
+
+  /// No description provided for @proxyAddrCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Local proxy address copied'**
+  String get proxyAddrCopied;
 
   /// No description provided for @vpnModeTunDesc.
   ///
@@ -1573,6 +1669,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This transport (e.g. plain WireGuard / Shadowsocks) is widely blocked in Russia — prefer Reality, Hysteria2 or XHTTP.'**
   String get transportBlockedWarn;
+
+  /// No description provided for @amneziaNoBridge.
+  ///
+  /// In en, this message translates to:
+  /// **'AmneziaWG config — but the AmneziaWG bridge (awg.exe) isn\'t installed, so this falls back to plain WireGuard, which an Amnezia server rejects (it won\'t connect). A normal WireGuard .conf works as-is.'**
+  String get amneziaNoBridge;
 
   /// No description provided for @fakeIpTitle.
   ///

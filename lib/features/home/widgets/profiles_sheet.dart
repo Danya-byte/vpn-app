@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/app_settings.dart';
 import '../../../core/core_controller.dart';
 import '../../../core/format.dart';
+import '../../../core/latency_probe.dart';
 import '../../../core/profiles_controller.dart';
 import '../../../core/proxy_node.dart';
 import '../../../core/share_link_encoder.dart';
@@ -30,6 +31,12 @@ class _ProfilesSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l = AppLocalizations.of(context);
     final state = ref.watch(profilesProvider);
+    final latency = ref.watch(latencyProbeProvider);
+    // The pre-connect probe dials servers DIRECTLY (raw TCP, ignores the system
+    // proxy) — while connected in proxy mode that leaks the real IP→server map
+    // around the tunnel, and it's redundant (live latency lives in Policies). So
+    // it's a disconnected-only action.
+    final connected = ref.watch(coreControllerProvider).isOn;
     final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: EdgeInsets.only(
@@ -49,6 +56,29 @@ class _ProfilesSheet extends ConsumerWidget {
                   style: const TextStyle(
                       fontSize: 18, fontWeight: FontWeight.w700)),
               const Spacer(),
+              if (state.nodes.isNotEmpty)
+                IconButton(
+                  tooltip: connected ? l.pingAllWhileOn : l.pingAll,
+                  visualDensity: VisualDensity.compact,
+                  icon: latency.measuring.isNotEmpty
+                      ? SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: scheme.primary),
+                        )
+                      : Icon(Icons.network_check_rounded,
+                          color: connected
+                              ? scheme.onSurface.withValues(alpha: 0.3)
+                              : scheme.primary),
+                  onPressed: (latency.measuring.isNotEmpty || connected)
+                      ? null
+                      : () => ref
+                          .read(latencyProbeProvider.notifier)
+                          .measureAll(state.nodes,
+                              abort: () =>
+                                  ref.read(coreControllerProvider).isOn),
+                ),
               if (state.nodes.any((n) => n.source != null))
                 IconButton(
                   tooltip: l.refreshSubs,
@@ -88,6 +118,10 @@ class _ProfilesSheet extends ConsumerWidget {
                   return _NodeTile(
                     node: n,
                     selected: selected,
+                    latencyMs: latency.results[n.tag],
+                    measured: latency.measured(n.tag),
+                    measuring: latency.isMeasuring(n.tag),
+                    unverified: latency.isUnverified(n.tag),
                     // select() already restarts the live tunnel to the new node;
                     // a second restart here caused a DOUBLE restart per tap.
                     onTap: () => _selectGuarded(context, ref, n),
@@ -95,6 +129,13 @@ class _ProfilesSheet extends ConsumerWidget {
                     onRename: () => _renameDialog(context, ref, n),
                     onView:
                         n.isConfig ? () => showConfigViewer(context, n) : null,
+                    onPinCert: n.insecure
+                        ? () => _pinCertDialog(context, ref, n)
+                        : null,
+                    onUnpin: n.pinned
+                        ? () => _unpinDialog(context, ref, n)
+                        : null,
+                    onShare: () => _shareNode(context, ref, n),
                   );
                 },
               ),
@@ -203,6 +244,63 @@ Future<void> _renameDialog(
   }
 }
 
+/// Pin a server's TLS certificate onto an insecure node so verification can be
+/// turned ON (the secure alternative to "trust anything"). The user pastes the
+/// server's PEM; sing-box then validates the handshake against exactly that cert.
+Future<void> _pinCertDialog(
+    BuildContext context, WidgetRef ref, ParsedNode n) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final ctrl = TextEditingController();
+  bool? ok;
+  var pem = '';
+  try {
+    ok = await showGlassDialog<bool>(
+      context,
+      child: _GlassFormDialog(
+        title: l.pinCertTitle,
+        confirmLabel: l.pinCertAction,
+        field: TextField(
+          controller: ctrl,
+          maxLines: 7,
+          minLines: 4,
+          autofocus: true,
+          style: const TextStyle(fontSize: 11, height: 1.3),
+          decoration: glassInputDecoration(context, l.pinCertHint),
+        ),
+      ),
+    );
+    pem = ctrl.text; // capture before dispose
+  } finally {
+    ctrl.dispose();
+  }
+  if (ok != true || !context.mounted) return;
+  final r = ref.read(profilesProvider.notifier).pinCertificate(n.tag, pem);
+  final (msg, kind) = switch (r) {
+    PinResult.ok => (l.pinCertDone, ToastKind.success),
+    PinResult.multipleServers => (l.pinCertMulti, ToastKind.error),
+    _ => (l.pinCertInvalid, ToastKind.error),
+  };
+  toast.message(msg, kind: kind);
+}
+
+/// Reverse a cert pin (confirm first — it restarts the active tunnel back to the
+/// insecure state). The recovery path for a wrong pasted cert that bricked the
+/// node while hiding its MITM badge.
+Future<void> _unpinDialog(
+    BuildContext context, WidgetRef ref, ParsedNode n) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final ok = await showGlassDialog<bool>(
+    context,
+    child: _ConfirmDialog(
+        message: l.unpinCertConfirm, confirmLabel: l.unpinCertAction),
+  );
+  if (ok != true || !context.mounted) return;
+  ref.read(profilesProvider.notifier).unpinCertificate(n.tag);
+  toast.message(l.unpinCertDone);
+}
+
 Future<void> _importTextDialog(BuildContext context, WidgetRef ref) async {
   final l = AppLocalizations.of(context);
   final ctrl = TextEditingController();
@@ -257,6 +355,9 @@ Future<void> _shareProfiles(BuildContext context, WidgetRef ref) async {
     // INSIDE it do: nodeLinks pulls them out. One link → copy it raw; many → a
     // base64 subscription. Only a config with zero single-URI exits (all
     // chained / exotic) yields nothing — then say so instead of copying empty.
+    // "For any app" shares the WHOLE server list — every exit inside a config
+    // becomes a link (a subscription when there's more than one), NOT just the
+    // currently-connected one, so the recipient gets all your servers.
     final links = ShareLinkEncoder.nodeLinks(nodes);
     if (links.isEmpty) {
       toast.message(l.shareNoUniversal, kind: ToastKind.error);
@@ -265,6 +366,36 @@ Future<void> _shareProfiles(BuildContext context, WidgetRef ref) async {
     link = links.length == 1
         ? links.single
         : ShareLinkEncoder.encodeSubscription(nodes);
+  }
+  await Clipboard.setData(ClipboardData(text: link));
+  if (!context.mounted) return;
+  toast.message(l.shareCopied, kind: ToastKind.success);
+}
+
+/// Share ONE profile straight from its row (no need to open the ⋮ menu): the same
+/// universal-link / with-settings choice as [_shareProfiles], scoped to [n]. "For
+/// any app" extracts EVERY exit server inside a config, not just the active one.
+Future<void> _shareNode(
+    BuildContext context, WidgetRef ref, ParsedNode n) async {
+  final l = AppLocalizations.of(context);
+  final toast = AppToast.of(context);
+  final mode = await showGlassDialog<String>(context, child: const _ShareMenu());
+  if (mode == null || !context.mounted) return;
+  final String link;
+  if (mode == 'bundle') {
+    link = ShareLinkEncoder.encodeBundle(
+      nodes: [n],
+      settings: ref.read(settingsProvider).shareableSubset(),
+    );
+  } else {
+    final links = ShareLinkEncoder.nodeLinks([n]);
+    if (links.isEmpty) {
+      toast.message(l.shareNoUniversal, kind: ToastKind.error);
+      return;
+    }
+    link = links.length == 1
+        ? links.single
+        : ShareLinkEncoder.encodeSubscription([n]);
   }
   await Clipboard.setData(ClipboardData(text: link));
   if (!context.mounted) return;
@@ -586,6 +717,97 @@ class _InsecureBadge extends StatelessWidget {
   }
 }
 
+/// Green chip = this node's TLS certificate is PINNED (server verified, no longer
+/// trust-anything) — the inverse of [_InsecureBadge].
+class _PinnedBadge extends StatelessWidget {
+  const _PinnedBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    const green = Color(0xFF3DDC97);
+    return Tooltip(
+      message: label,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: green.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: green.withValues(alpha: 0.45)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.verified_rounded, size: 11, color: green),
+            const SizedBox(width: 3),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 9.5, fontWeight: FontWeight.w700, color: green)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Compact latency readout: green/amber/red `N ms` for a reachable TCP server,
+/// grey "UDP" when the transport is UDP (a TCP probe can't measure it — not a
+/// block), a red block icon when a TCP server didn't answer (likely blocked), and
+/// an amber "?" when the host couldn't be safely resolved over DoH (the system
+/// resolver is poisonable, so the result can't be trusted either way).
+class _LatencyChip extends StatelessWidget {
+  const _LatencyChip(
+      {required this.ms, required this.udp, this.unverified = false});
+
+  final int? ms;
+  final bool udp;
+  final bool unverified;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final int? ping = ms;
+    late final Color color;
+    late final Widget child;
+    if (unverified) {
+      color = const Color(0xFFE0A53D);
+      child = Text('?',
+          style: TextStyle(
+              fontSize: 11, fontWeight: FontWeight.w800, color: color));
+    } else if (ping != null) {
+      color = ping < 150
+          ? const Color(0xFF3DDC97)
+          : ping < 400
+              ? const Color(0xFFE0A53D)
+              : const Color(0xFFE05D5D);
+      child = Text('$ping ms',
+          style: TextStyle(
+              fontSize: 10.5, fontWeight: FontWeight.w700, color: color));
+    } else if (udp) {
+      color = scheme.onSurface.withValues(alpha: 0.4);
+      child = Text('UDP',
+          style: TextStyle(
+              fontSize: 10.5, fontWeight: FontWeight.w700, color: color));
+    } else {
+      color = const Color(0xFFE05D5D);
+      child = Icon(Icons.block_rounded, size: 12, color: color);
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.13),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: child,
+      ),
+    );
+  }
+}
+
 class _NodeTile extends StatelessWidget {
   const _NodeTile({
     required this.node,
@@ -594,6 +816,13 @@ class _NodeTile extends StatelessWidget {
     required this.onDelete,
     required this.onRename,
     this.onView,
+    this.onPinCert,
+    this.onUnpin,
+    this.onShare,
+    this.latencyMs,
+    this.measured = false,
+    this.measuring = false,
+    this.unverified = false,
   });
 
   final ParsedNode node;
@@ -602,6 +831,13 @@ class _NodeTile extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onRename;
   final VoidCallback? onView;
+  final VoidCallback? onPinCert;
+  final VoidCallback? onUnpin;
+  final VoidCallback? onShare;
+  final int? latencyMs;
+  final bool measured;
+  final bool measuring;
+  final bool unverified;
 
   @override
   Widget build(BuildContext context) {
@@ -658,11 +894,29 @@ class _NodeTile extends StatelessWidget {
                             const SizedBox(width: 6),
                             _InsecureBadge(label: l.insecureBadge),
                           ],
+                          if (node.pinned) ...[
+                            const SizedBox(width: 6),
+                            _PinnedBadge(label: l.pinnedBadge),
+                          ],
                         ],
                       ),
                     ],
                   ),
                 ),
+                if (measuring)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else if (measured)
+                  _LatencyChip(
+                    ms: latencyMs,
+                    udp: nodeEndpoint(node)?.udp ?? false,
+                    unverified: unverified,
+                  ),
                 if (onView != null)
                   IconButton(
                     visualDensity: VisualDensity.compact,
@@ -670,6 +924,33 @@ class _NodeTile extends StatelessWidget {
                         size: 18,
                         color: scheme.onSurface.withValues(alpha: 0.55)),
                     onPressed: onView,
+                  ),
+                if (onPinCert != null)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: l.pinCertAction,
+                    icon: Icon(Icons.verified_user_outlined,
+                        size: 17, color: scheme.primary),
+                    onPressed: onPinCert,
+                  )
+                else if (onUnpin != null)
+                  // Green filled shield = certificate pinned (verified). Tap to
+                  // reverse a pin (e.g. a wrong cert that bricked the node).
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: l.unpinCertAction,
+                    icon: const Icon(Icons.verified_user_rounded,
+                        size: 17, color: Color(0xFF3DDC97)),
+                    onPressed: onUnpin,
+                  ),
+                if (onShare != null)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: l.shareTitle,
+                    icon: Icon(Icons.ios_share_rounded,
+                        size: 17,
+                        color: scheme.onSurface.withValues(alpha: 0.55)),
+                    onPressed: onShare,
                   ),
                 IconButton(
                   visualDensity: VisualDensity.compact,

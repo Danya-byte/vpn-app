@@ -72,6 +72,21 @@ class DesyncConfig {
 
   static bool isValidStrategy(String s) => strategies.containsKey(s);
 
+  /// Cascade order for the server-less DPI-desync — the transport-cascade analogue
+  /// for the no-server layer: when one preset doesn't unblock a host, the engine
+  /// re-spawns winws with the next UNTRIED preset. Strongest/most-specific first
+  /// (fake+multidisorder), gentler fallbacks after (single disorder, plain split).
+  static const strategyCascade = ['fake_split', 'fake_disorder', 'split'];
+
+  /// The next desync preset to try given the ones already [tried] this episode, or
+  /// null when every preset is exhausted. PURE.
+  static String? nextStrategy(Set<String> tried) {
+    for (final s in strategyCascade) {
+      if (!tried.contains(s)) return s;
+    }
+    return null;
+  }
+
   /// Canonical RF TLS-DPI / throttle targets seeded into the hostlist. winws only
   /// touches connections whose SNI/Host matches an entry (suffix match — so
   /// `youtube.com` also covers `*.youtube.com`); everything else is untouched.
@@ -94,6 +109,14 @@ class DesyncConfig {
     'instagram.com', 'cdninstagram.com', 'facebook.com', 'fbcdn.net',
     // X / Twitter
     'x.com', 'twitter.com', 'twimg.com', 't.co',
+    // Telegram WEB (web.telegram.org + its per-DC websocket subdomains
+    // *.web.telegram.org — suffix match covers them). Telegram's CORE block in RF
+    // is IP-level (the MTProto DC IPs are dropped → winws can't help those; the
+    // tunnel's native Telegram-unblock pins those CIDRs to a foreign exit). But the
+    // web page is, on some operators, only SNI-DPI'd with the IP still reachable —
+    // there a server-less SNI-desync opens it. Harmless to list otherwise (winws
+    // tries, the dropped-IP case just falls back to a server).
+    'web.telegram.org',
     // misc commonly SNI-throttled in RF
     'soundcloud.com', 'sndcdn.com',
   ];
@@ -111,8 +134,26 @@ class DesyncConfig {
     required String hostlistPath,
     String strategy = defaultStrategy,
     String? quicPayloadPath,
+    String? decoySni,
   }) {
-    final method = strategies[strategy] ?? strategies[defaultStrategy]!;
+    var method = strategies[strategy] ?? strategies[defaultStrategy]!;
+    // ④ Rotate the fake-TLS DECOY SNI (gosuslugi.ru → another never-blocked RU host)
+    // when a stateful ТСПУ starts classifying the current decoy. ONLY the decoy
+    // changes — the real split ClientHello still carries the true target host.
+    if (decoySni != null && decoySni.isNotEmpty) {
+      if (method.any((a) => a.contains('sni='))) {
+        // A preset that already carries a decoy SNI (fake_split) → rewrite it.
+        method = method
+            .map((a) => a.replaceAll(RegExp(r'sni=[^,]+'), 'sni=$decoySni'))
+            .toList();
+      } else if (method.any((a) => a.contains('--dpi-desync=fake'))) {
+        // A fake-based preset with NO SNI mod (fake_disorder) → ADD a padded decoy
+        // SNI so the rotation actually takes effect on the wire (was a silent no-op
+        // before). A pure-split preset has no fake packet to carry a decoy, so it's
+        // left unchanged — an honest no-op there.
+        method = [...method, '--dpi-desync-fake-tls-mod=padencap,sni=$decoySni'];
+      }
+    }
     final args = <String>[
       // Global WinDivert capture window — ONLY these ports enter the engine, so
       // the kernel callout never touches the rest of the machine's traffic.

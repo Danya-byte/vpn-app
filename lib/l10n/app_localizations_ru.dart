@@ -278,6 +278,17 @@ class AppLocalizationsRu extends AppLocalizations {
   String get desyncIdle => 'Включится при подключении.';
 
   @override
+  String get desyncTryNext => 'Следующий метод';
+
+  @override
+  String get desyncTryingNext =>
+      'Пробую следующий метод обхода — проверь, открылся ли сайт';
+
+  @override
+  String get desyncNoMore =>
+      'Все методы перепробованы — сайт, видимо, заблокирован по IP (нужен сервер)';
+
+  @override
   String get desyncStrategyLabel => 'Метод';
 
   @override
@@ -303,6 +314,47 @@ class AppLocalizationsRu extends AppLocalizations {
   String get refreshSubs => 'Обновить подписки';
 
   @override
+  String get pingAll => 'Замерить задержку (без подключения)';
+
+  @override
+  String get pingAllWhileOn =>
+      'Доступно до подключения — задержка вживую в Activity → Policies';
+
+  @override
+  String get pinCertAction => 'Закрепить сертификат';
+
+  @override
+  String get pinCertTitle => 'Закрепить сертификат сервера';
+
+  @override
+  String get pinCertHint =>
+      'Вставьте сертификат сервера (PEM, -----BEGIN CERTIFICATE-----…)';
+
+  @override
+  String get pinCertDone =>
+      'Сертификат закреплён — проверка включена, больше не insecure';
+
+  @override
+  String get pinCertInvalid => 'Это не валидный PEM-сертификат';
+
+  @override
+  String get pinCertMulti =>
+      'В этом конфиге несколько insecure-серверов — пиннинг по одному пока не поддерживается';
+
+  @override
+  String get unpinCertAction => 'Убрать закреплённый сертификат';
+
+  @override
+  String get unpinCertConfirm =>
+      'Убрать закреплённый сертификат? Сервер вернётся в режим без проверки (insecure), пока не закрепишь правильный.';
+
+  @override
+  String get unpinCertDone => 'Закреплённый сертификат убран';
+
+  @override
+  String get pinnedBadge => 'проверен';
+
+  @override
   String get subsUpToDate => 'Подписки актуальны';
 
   @override
@@ -323,7 +375,10 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get proxyAppsHint =>
-      'Приложения, игнорящие системный прокси (Telegram-десктоп и его звонки, CLI-утилиты), идут через туннель только в режиме TUN.';
+      'Приложения, игнорящие системный прокси (Telegram-десктоп и его звонки, CLI-утилиты), идут через туннель только в режиме TUN — ИЛИ укажи их собственный SOCKS5-прокси на адрес ниже (Telegram: Настройки → Продвинутые → Тип соединения → SOCKS5 — так пойдут и звонки).';
+
+  @override
+  String get proxyAddrCopied => 'Адрес локального прокси скопирован';
 
   @override
   String get vpnModeTunDesc =>
@@ -835,6 +890,10 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get transportBlockedWarn =>
       'Этот транспорт (напр. чистый WireGuard / Shadowsocks) массово блокируется в РФ — лучше Reality, Hysteria2 или XHTTP.';
+
+  @override
+  String get amneziaNoBridge =>
+      'Конфиг AmneziaWG — но мост AmneziaWG (awg.exe) не установлен, поэтому он откатывается на обычный WireGuard, который сервер Amnezia отклоняет (не подключится). Обычный WireGuard .conf работает как есть.';
 
   @override
   String get fakeIpTitle => 'Быстрый DNS (TUN)';

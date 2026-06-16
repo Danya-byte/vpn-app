@@ -2,7 +2,7 @@ import 'dart:io' show InternetAddress;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
-    show FilteringTextInputFormatter, MethodChannel;
+    show Clipboard, ClipboardData, FilteringTextInputFormatter, MethodChannel;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart'; // StateProvider (moved in Riverpod 3)
 
@@ -272,6 +272,41 @@ class SettingsPage extends ConsumerWidget {
                               fontSize: 11.5, color: Color(0xFFE0A53D))),
                     ),
                   ],
+                ),
+                const SizedBox(height: 6),
+                // Tap-to-copy the local proxy for a proxy-aware app's own SOCKS5
+                // (Telegram → carries calls in proxy mode, where the system proxy
+                // alone is TCP-only). matches SingBoxConfig.mixedListen:mixedPort.
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: InkWell(
+                    onTap: () {
+                      Clipboard.setData(
+                          const ClipboardData(text: '127.0.0.1:2080'));
+                      AppToast.of(context).message(l.proxyAddrCopied);
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: scheme.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: scheme.primary.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.copy_rounded,
+                            size: 13, color: scheme.primary),
+                        const SizedBox(width: 6),
+                        Text('SOCKS5  127.0.0.1:2080',
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: scheme.primary)),
+                      ]),
+                    ),
+                  ),
                 ),
               ],
               if (vpnMode == VpnMode.tun && !elevated) ...[
@@ -730,7 +765,21 @@ class _DesyncCard extends ConsumerWidget {
     Widget? statusLine;
     if (on) {
       if (status == DesyncEngineStatus.active) {
-        statusLine = _line(Icons.check_circle, scheme.primary, l.desyncActive);
+        statusLine = Row(children: [
+          Expanded(
+              child: _line(Icons.check_circle, scheme.primary, l.desyncActive)),
+          // ② Site still blocked? One tap advances to the next preset + ④ decoy SNI
+          // (the user has ground truth — they can see the page didn't open).
+          TextButton(
+            onPressed: () {
+              final ok =
+                  ref.read(coreControllerProvider.notifier).desyncEscalate();
+              AppToast.of(context)
+                  .message(ok ? l.desyncTryingNext : l.desyncNoMore);
+            },
+            child: Text(l.desyncTryNext, style: const TextStyle(fontSize: 12)),
+          ),
+        ]);
       } else if (status == DesyncEngineStatus.missing) {
         statusLine =
             _line(Icons.error_outline, Colors.orangeAccent, l.desyncMissing);

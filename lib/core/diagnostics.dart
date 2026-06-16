@@ -256,11 +256,48 @@ class Diagnostics {
         (b[0] == 192 && b[1] == 168);
   }
 
+  /// Public DoH (DNS-over-HTTPS → 1.1.1.1) resolver, reused by the pre-connect
+  /// latency probe so it never trusts the operator's poisonable system resolver.
+  static Future<Set<String>> doh(String host) => _doh(host);
+
+  // DoH resolvers tried IN ORDER (RFC 8484 JSON API). All are IP-LITERAL — a
+  // hostname resolver (dns.google) would need DNS to bootstrap, the very thing
+  // that's blocked — and each provider's cert carries that IP as a SAN, so TLS
+  // still verifies. 1.1.1.1 is the most-blocked in RF, so the cascade falls
+  // through to Google / Quad9 / the secondaries until one answers.
+  static const _dohEndpoints = [
+    'https://1.1.1.1/dns-query',
+    'https://8.8.8.8/resolve',
+    'https://9.9.9.9:5053/dns-query',
+    'https://1.0.0.1/dns-query',
+    'https://149.112.112.112:5053/dns-query',
+  ];
+
   static Future<Set<String>> _doh(String host) async {
+    // RACE all resolvers in PARALLEL — return the FIRST non-empty answer, so a
+    // blocked resolver (1.1.1.1 is the most-blocked in RF) never serially delays the
+    // rest. Worst case (all 5 blocked) is ONE ~3-4s round, not 5×3s ≈ 15s — which
+    // would spin the latency chip + eat the diagnostic's per-site 22s budget.
+    final completer = Completer<Set<String>>();
+    var pending = _dohEndpoints.length;
+    for (final base in _dohEndpoints) {
+      _dohOne(base, host).then((ips) {
+        pending--;
+        if (ips.isNotEmpty) {
+          if (!completer.isCompleted) completer.complete(ips);
+        } else if (pending == 0 && !completer.isCompleted) {
+          completer.complete(<String>{});
+        }
+      });
+    }
+    return completer.future;
+  }
+
+  static Future<Set<String>> _dohOne(String base, String host) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
     try {
-      final req = await client.getUrl(
-          Uri.parse('https://1.1.1.1/dns-query?name=$host&type=A'));
+      final req = await client
+          .getUrl(Uri.parse('$base?name=$host&type=A&ct=application/dns-json'));
       req.headers.set(HttpHeaders.acceptHeader, 'application/dns-json');
       final resp = await req.close().timeout(const Duration(seconds: 4));
       if (resp.statusCode != 200) return {};

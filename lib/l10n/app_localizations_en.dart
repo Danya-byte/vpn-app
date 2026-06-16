@@ -276,6 +276,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get desyncIdle => 'Engages when you connect.';
 
   @override
+  String get desyncTryNext => 'Try next method';
+
+  @override
+  String get desyncTryingNext =>
+      'Trying the next bypass method — check if the site opens now';
+
+  @override
+  String get desyncNoMore =>
+      'Tried every method — this site is likely IP-blocked (needs a server, not just desync)';
+
+  @override
   String get desyncStrategyLabel => 'Method';
 
   @override
@@ -301,6 +312,47 @@ class AppLocalizationsEn extends AppLocalizations {
   String get refreshSubs => 'Refresh subscriptions';
 
   @override
+  String get pingAll => 'Measure latency (no connection)';
+
+  @override
+  String get pingAllWhileOn =>
+      'Measure before connecting — live latency is in Activity → Policies';
+
+  @override
+  String get pinCertAction => 'Pin certificate';
+
+  @override
+  String get pinCertTitle => 'Pin server certificate';
+
+  @override
+  String get pinCertHint =>
+      'Paste the server\'s certificate (PEM, -----BEGIN CERTIFICATE-----…)';
+
+  @override
+  String get pinCertDone =>
+      'Certificate pinned — verification is on, no longer insecure';
+
+  @override
+  String get pinCertInvalid => 'That isn\'t a valid PEM certificate';
+
+  @override
+  String get pinCertMulti =>
+      'This config has several insecure servers — per-server pinning isn\'t supported yet';
+
+  @override
+  String get unpinCertAction => 'Remove pinned certificate';
+
+  @override
+  String get unpinCertConfirm =>
+      'Remove the pinned certificate? The server goes back to no-verification (insecure) until you pin the correct one.';
+
+  @override
+  String get unpinCertDone => 'Pinned certificate removed';
+
+  @override
+  String get pinnedBadge => 'verified';
+
+  @override
   String get subsUpToDate => 'Subscriptions up to date';
 
   @override
@@ -321,7 +373,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get proxyAppsHint =>
-      'Apps that ignore the system proxy — Telegram desktop & its calls, CLI tools — only ride the tunnel in TUN mode.';
+      'Apps that ignore the system proxy — Telegram desktop & its calls, CLI tools — only ride the tunnel in TUN mode, OR point their own SOCKS5 proxy at the address below (Telegram: Settings → Advanced → Connection type → SOCKS5 — this carries calls too).';
+
+  @override
+  String get proxyAddrCopied => 'Local proxy address copied';
 
   @override
   String get vpnModeTunDesc =>
@@ -831,6 +886,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get transportBlockedWarn =>
       'This transport (e.g. plain WireGuard / Shadowsocks) is widely blocked in Russia — prefer Reality, Hysteria2 or XHTTP.';
+
+  @override
+  String get amneziaNoBridge =>
+      'AmneziaWG config — but the AmneziaWG bridge (awg.exe) isn\'t installed, so this falls back to plain WireGuard, which an Amnezia server rejects (it won\'t connect). A normal WireGuard .conf works as-is.';
 
   @override
   String get fakeIpTitle => 'Faster DNS (TUN)';

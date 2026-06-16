@@ -5,11 +5,15 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core_controller.dart';
+import 'latency_probe.dart';
 import 'profile_store.dart';
 import 'proxy_node.dart';
 import 'share_link.dart';
 import 'share_link_encoder.dart';
 import 'sub_info.dart';
+
+/// Outcome of [ProfilesController.pinCertificate].
+enum PinResult { ok, badPem, multipleServers, noTarget }
 
 class ProfilesState {
   const ProfilesState(
@@ -387,7 +391,155 @@ class ProfilesController extends Notifier<ProfilesState> {
     return true;
   }
 
+  static bool _isInsecure(Map o) {
+    final tls = o['tls'];
+    return tls is Map && tls['insecure'] == true && tls['reality'] == null;
+  }
+
+  /// Validate a PEM CERTIFICATE block: ORDERED BEGIN..END markers whose body
+  /// base64-decodes to a non-trivial DER. Returns the clean BEGIN..END lines, or
+  /// null — so a marker-only / garbled-body paste is NEVER written into the TLS
+  /// block (which would FATAL the core on the next start, tearing down the tunnel).
+  static List<String>? _validatePemCertificate(String pem) {
+    final lines = pem
+        .split(RegExp(r'\r?\n'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    final begin = lines.indexWhere((l) => l.contains('BEGIN CERTIFICATE'));
+    final end = lines.indexWhere((l) => l.contains('END CERTIFICATE'));
+    if (begin < 0 || end <= begin) return null;
+    try {
+      final der = base64.decode(lines.sublist(begin + 1, end).join());
+      if (der.length < 100) return null; // too small to be a real X.509 cert
+    } catch (_) {
+      return null; // body isn't valid base64
+    }
+    return lines.sublist(begin, end + 1);
+  }
+
+  /// Pin a server certificate (PEM) onto [tag] so the client trusts ONLY that cert
+  /// and `insecure` (no verification — an on-path MITM hole) can be turned off.
+  /// Verified for hysteria2/tuic (sing-box honours an inline cert). A config with
+  /// MORE THAN ONE insecure server is REFUSED ([PinResult.multipleServers]) — one
+  /// pasted cert can't be correct for several distinct self-signed exits, and
+  /// silently pinning it onto all of them would break the others AND hide their
+  /// MITM badge. Restarts the live tunnel if the pinned node is the active one.
+  PinResult pinCertificate(String tag, String pem) {
+    final lines = _validatePemCertificate(pem);
+    if (lines == null) return PinResult.badPem;
+
+    ParsedNode? target;
+    for (final n in state.nodes) {
+      if (n.tag == tag) {
+        target = n;
+        break;
+      }
+    }
+    if (target == null) return PinResult.noTarget;
+
+    if (target.isConfig) {
+      final insecure = <Map>[];
+      for (final key in const ['outbounds', 'endpoints']) {
+        for (final o in (target.config?[key] as List?) ?? const []) {
+          if (o is Map && _isInsecure(o)) insecure.add(o);
+        }
+      }
+      if (insecure.isEmpty) return PinResult.noTarget;
+      if (insecure.length > 1) return PinResult.multipleServers;
+    } else if (!_isInsecure(target.outbound)) {
+      return PinResult.noTarget;
+    }
+
+    void pinTls(Map o) {
+      final tls = o['tls'] as Map;
+      tls['certificate'] = lines;
+      tls['insecure'] = false; // trust the pinned cert, not "trust anything"
+    }
+
+    final pinningActive = state.selectedNode?.tag == tag;
+    final nodes = state.nodes.map((n) {
+      if (n.tag != tag) return n;
+      if (n.config != null) {
+        final cfg = jsonDecode(jsonEncode(n.config)) as Map<String, dynamic>;
+        for (final key in const ['outbounds', 'endpoints']) {
+          for (final o in (cfg[key] as List?) ?? const []) {
+            if (o is Map && _isInsecure(o)) pinTls(o);
+          }
+        }
+        return ParsedNode(
+            tag: n.tag, outbound: n.outbound, config: cfg, source: n.source);
+      }
+      final ob = jsonDecode(jsonEncode(n.outbound)) as Map<String, dynamic>;
+      pinTls(ob);
+      return ParsedNode(
+          tag: n.tag, outbound: ob, config: n.config, source: n.source);
+    }).toList();
+    state = state.copyWith(nodes: nodes);
+    _persist();
+    if (pinningActive && ref.read(coreControllerProvider).isOn) {
+      ref
+          .read(coreControllerProvider.notifier)
+          .restart(reason: 'pin certificate');
+    }
+    return PinResult.ok;
+  }
+
+  /// Reverse a cert pin: drop `tls.certificate` and restore `insecure:true` on the
+  /// pinned outbound(s). A WRONG-but-structurally-valid pasted cert would brick the
+  /// node (handshake fails) WHILE hiding its MITM badge, with no other way back —
+  /// this makes it recoverable in-app (then re-pin the correct cert). Restarts the
+  /// live tunnel if the node is active. Returns false if the node isn't pinned.
+  bool unpinCertificate(String tag) {
+    ParsedNode? target;
+    for (final n in state.nodes) {
+      if (n.tag == tag) {
+        target = n;
+        break;
+      }
+    }
+    if (target == null || !target.pinned) return false;
+
+    void unpinTls(Map o) {
+      final tls = o['tls'];
+      if (tls is Map && tls['certificate'] != null) {
+        tls.remove('certificate');
+        tls['insecure'] = true; // back to the flagged + consent-gated state
+      }
+    }
+
+    final active = state.selectedNode?.tag == tag;
+    final nodes = state.nodes.map((n) {
+      if (n.tag != tag) return n;
+      if (n.config != null) {
+        final cfg = jsonDecode(jsonEncode(n.config)) as Map<String, dynamic>;
+        for (final key in const ['outbounds', 'endpoints']) {
+          for (final o in (cfg[key] as List?) ?? const []) {
+            if (o is Map) unpinTls(o);
+          }
+        }
+        return ParsedNode(
+            tag: n.tag, outbound: n.outbound, config: cfg, source: n.source);
+      }
+      final ob = jsonDecode(jsonEncode(n.outbound)) as Map<String, dynamic>;
+      unpinTls(ob);
+      return ParsedNode(
+          tag: n.tag, outbound: ob, config: n.config, source: n.source);
+    }).toList();
+    state = state.copyWith(nodes: nodes);
+    _persist();
+    if (active && ref.read(coreControllerProvider).isOn) {
+      ref
+          .read(coreControllerProvider.notifier)
+          .restart(reason: 'unpin certificate');
+    }
+    return true;
+  }
+
   void remove(String tag) {
+    // Drop any stale latency chip for this tag — else a later node that reuses the
+    // same display name would inherit the deleted node's measurement.
+    ref.read(latencyProbeProvider.notifier).forget(tag);
     // Was traffic currently flowing through the node being deleted?
     final removingActive = state.selectedNode?.tag == tag;
     final nodes = state.nodes.where((n) => n.tag != tag).toList();

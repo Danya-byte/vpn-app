@@ -4,9 +4,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/amnezia_config.dart';
 import '../../../core/app_settings.dart';
-import '../../../core/cascade.dart' show familiesFromConfig, transportWidelyBlocked;
+import '../../../core/cascade.dart'
+    show familiesFromConfig, transportWidelyBlocked;
 import '../../../core/core_controller.dart';
+import '../../../core/core_paths.dart';
 import '../../../core/format.dart';
 import '../../../core/profiles_controller.dart';
 import '../../../core/proxy_node.dart';
@@ -54,15 +57,17 @@ Future<void> applyImport(
         n.remove(t);
       }
       toast.message(
-          r.addedTags.isEmpty ? l.importNotConnected : l.importDiscarded);
+        r.addedTags.isEmpty ? l.importNotConnected : l.importDiscarded,
+      );
       return;
     }
   }
   final tag = r.firstTag;
   if (tag != null) ref.read(profilesProvider.notifier).select(tag);
   toast.message(
-      r.alreadyImported ? l.msgAlreadyImported : l.msgAddedNodes(r.added),
-      kind: ToastKind.success);
+    r.alreadyImported ? l.msgAlreadyImported : l.msgAddedNodes(r.added),
+    kind: ToastKind.success,
+  );
   final core = ref.read(coreControllerProvider.notifier);
   await core.restart(reason: 'import');
   // The success toast above mustn't be the last word if the tunnel never
@@ -118,7 +123,8 @@ Future<void> _importBundle(
       notifier.remove(t);
     }
     toast.message(
-        r.addedTags.isEmpty ? l.importNotConnected : l.importDiscarded);
+      r.addedTags.isEmpty ? l.importNotConnected : l.importDiscarded,
+    );
     return;
   }
   if (choice.applySettings && bundle.settings != null) {
@@ -136,8 +142,9 @@ Future<void> _importBundle(
   final tag = r.firstTag;
   if (tag != null) notifier.select(tag);
   toast.message(
-      r.alreadyImported ? l.msgAlreadyImported : l.msgAddedNodes(r.added),
-      kind: ToastKind.success);
+    r.alreadyImported ? l.msgAlreadyImported : l.msgAddedNodes(r.added),
+    kind: ToastKind.success,
+  );
   final core = ref.read(coreControllerProvider.notifier);
   await core.restart(reason: 'import bundle');
   // Mirror applyImport: the success toast mustn't be the last word if the tunnel
@@ -204,7 +211,9 @@ Future<void> importDroppedContent(
       toast.message(l.msgQrNotFound, kind: ToastKind.error);
       return;
     }
-    bytes = utf8.encode(qr); // re-enter the normal text path with the decoded link
+    bytes = utf8.encode(
+      qr,
+    ); // re-enter the normal text path with the decoded link
   }
   final content = _decodeBytes(bytes);
   // Our own `vpn://share` bundle (nodes carried losslessly + the sender's
@@ -225,14 +234,17 @@ Future<void> importDroppedContent(
     if (!trusted) {
       final host = Uri.tryParse(url)?.host;
       final go = await _confirmFetch(
-          context, host != null && host.isNotEmpty ? host : url,
-          insecure: url.startsWith('http://'));
+        context,
+        host != null && host.isNotEmpty ? host : url,
+        insecure: url.startsWith('http://'),
+      );
       if (!context.mounted || go != true) return;
     }
     ImportResult fetched;
     try {
-      fetched =
-          await ref.read(profilesProvider.notifier).importSubscriptionUrl(url);
+      fetched = await ref
+          .read(profilesProvider.notifier)
+          .importSubscriptionUrl(url);
     } catch (e) {
       toast.message(l.msgLoadError(friendlyError(e)), kind: ToastKind.error);
       return;
@@ -259,7 +271,10 @@ Future<void> importDroppedContent(
 
 /// Preview the just-imported (untrusted) node and ask before connecting.
 Future<bool?> _confirmExternalImport(
-    BuildContext context, WidgetRef ref, ImportResult r) {
+  BuildContext context,
+  WidgetRef ref,
+  ImportResult r,
+) {
   ParsedNode? node;
   for (final n in ref.read(profilesProvider).nodes) {
     if (n.tag == r.firstTag) {
@@ -267,13 +282,15 @@ Future<bool?> _confirmExternalImport(
       break;
     }
   }
-  return showGlassDialog<bool>(context,
-      child: _ImportPreview(node: node));
+  return showGlassDialog<bool>(context, child: _ImportPreview(node: node));
 }
 
 /// Consent before fetching an untrusted subscription URL (it leaks the IP).
-Future<bool?> _confirmFetch(BuildContext context, String host,
-    {bool insecure = false}) {
+Future<bool?> _confirmFetch(
+  BuildContext context,
+  String host, {
+  bool insecure = false,
+}) {
   final l = AppLocalizations.of(context);
   final body = insecure
       ? '${l.importFetchBody(host)}\n\n⚠ ${l.importFetchInsecure}'
@@ -347,13 +364,17 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(l.shareImportTitle,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          Text(
+            l.shareImportTitle,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 12),
           if (n != null && !n.isConfig) ...[
             _kvRow(l.importProtocol, n.type),
-            _kvRow(l.importServer,
-                '${n.outbound['server'] ?? '?'}:${n.outbound['server_port'] ?? '?'}'),
+            _kvRow(
+              l.importServer,
+              '${n.outbound['server'] ?? '?'}:${n.outbound['server_port'] ?? '?'}',
+            ),
           ] else if (n != null && n.isConfig) ...[
             _kvRow(l.importProtocol, l.importConfigProfile),
             if (cfgServers != null) _kvRow(l.importServer, cfgServers),
@@ -371,6 +392,10 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
             const SizedBox(height: 10),
             _InsecureWarn(label: l.transportBlockedWarn),
           ],
+          if (n != null && _amneziaNeedsBridge(n)) ...[
+            const SizedBox(height: 10),
+            _InsecureWarn(label: l.amneziaNoBridge),
+          ],
           if (widget.autoUpdate) ...[
             const SizedBox(height: 10),
             Row(
@@ -378,10 +403,13 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
                 Icon(Icons.sync_rounded, size: 15, color: scheme.primary),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(l.shareAutoUpdateNote,
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: scheme.onSurface.withValues(alpha: 0.7))),
+                  child: Text(
+                    l.shareAutoUpdateNote,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurface.withValues(alpha: 0.7),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -399,22 +427,29 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(l.shareApplySettings,
-                              style: const TextStyle(
-                                  fontSize: 13.5, fontWeight: FontWeight.w600)),
+                          Text(
+                            l.shareApplySettings,
+                            style: const TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                           const SizedBox(height: 2),
-                          Text(l.shareApplySettingsDesc,
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color:
-                                      scheme.onSurface.withValues(alpha: 0.6))),
+                          Text(
+                            l.shareApplySettingsDesc,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: scheme.onSurface.withValues(alpha: 0.6),
+                            ),
+                          ),
                         ],
                       ),
                     ),
                     const SizedBox(width: 10),
                     GlassSwitch(
-                        value: _applySettings,
-                        onChanged: (v) => setState(() => _applySettings = v)),
+                      value: _applySettings,
+                      onChanged: (v) => setState(() => _applySettings = v),
+                    ),
                   ],
                 ),
               ),
@@ -427,23 +462,30 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
               color: scheme.error.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Text(l.importExternalWarning,
-                style: TextStyle(
-                    fontSize: 12.5, height: 1.35, color: scheme.onSurface)),
+            child: Text(
+              l.importExternalWarning,
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.35,
+                color: scheme.onSurface,
+              ),
+            ),
           ),
           const SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton(
-                  onPressed: () =>
-                      Navigator.pop(context, const _BundleChoice(false, false)),
-                  child: Text(l.cancel)),
+                onPressed: () =>
+                    Navigator.pop(context, const _BundleChoice(false, false)),
+                child: Text(l.cancel),
+              ),
               const SizedBox(width: 8),
               FilledButton(
-                  onPressed: () => Navigator.pop(
-                      context, _BundleChoice(true, _applySettings)),
-                  child: Text(l.importConnectAction)),
+                onPressed: () =>
+                    Navigator.pop(context, _BundleChoice(true, _applySettings)),
+                child: Text(l.importConnectAction),
+              ),
             ],
           ),
         ],
@@ -452,21 +494,23 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
   }
 
   Widget _kvRow(String k, String v) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-                width: 78,
-                child: Text(k,
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600))),
-            Expanded(
-                child:
-                    SelectableText(v, style: const TextStyle(fontSize: 13))),
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 3),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 78,
+          child: Text(
+            k,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
         ),
-      );
+        Expanded(
+          child: SelectableText(v, style: const TextStyle(fontSize: 13)),
+        ),
+      ],
+    ),
+  );
 }
 
 /// Node preview + insecure badge + external-source warning → Connect / Cancel.
@@ -485,7 +529,12 @@ class _ImportPreview extends StatelessWidget {
     if (n != null && !n.isConfig) {
       final ob = n.outbound;
       rows.add(_kv(l.importProtocol, n.type));
-      rows.add(_kv(l.importServer, '${ob['server'] ?? '?'}:${ob['server_port'] ?? '?'}'));
+      rows.add(
+        _kv(
+          l.importServer,
+          '${ob['server'] ?? '?'}:${ob['server_port'] ?? '?'}',
+        ),
+      );
       final tls = ob['tls'];
       final sni = tls is Map ? tls['server_name']?.toString() : null;
       if (sni != null && sni.isNotEmpty) rows.add(_kv('SNI', sni));
@@ -513,9 +562,10 @@ class _ImportPreview extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(n?.tag ?? l.importReviewTitle,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          Text(
+            n?.tag ?? l.importReviewTitle,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 12),
           ...rows,
           if (insecure) ...[
@@ -530,6 +580,10 @@ class _ImportPreview extends StatelessWidget {
             const SizedBox(height: 10),
             _InsecureWarn(label: l.transportBlockedWarn),
           ],
+          if (n != null && _amneziaNeedsBridge(n)) ...[
+            const SizedBox(height: 10),
+            _InsecureWarn(label: l.amneziaNoBridge),
+          ],
           const SizedBox(height: 14),
           Container(
             padding: const EdgeInsets.all(12),
@@ -540,7 +594,10 @@ class _ImportPreview extends StatelessWidget {
             child: Text(
               l.importExternalWarning,
               style: TextStyle(
-                  fontSize: 12.5, height: 1.35, color: scheme.onSurface),
+                fontSize: 12.5,
+                height: 1.35,
+                color: scheme.onSurface,
+              ),
             ),
           ),
           const SizedBox(height: 16),
@@ -548,12 +605,14 @@ class _ImportPreview extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: Text(l.cancel)),
+                onPressed: () => Navigator.pop(context, false),
+                child: Text(l.cancel),
+              ),
               const SizedBox(width: 8),
               FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: Text(l.importConnectAction)),
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(l.importConnectAction),
+              ),
             ],
           ),
         ],
@@ -562,19 +621,23 @@ class _ImportPreview extends StatelessWidget {
   }
 
   Widget _kv(String k, String v) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-                width: 78,
-                child: Text(k,
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600))),
-            Expanded(child: SelectableText(v, style: const TextStyle(fontSize: 13))),
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 3),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 78,
+          child: Text(
+            k,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
         ),
-      );
+        Expanded(
+          child: SelectableText(v, style: const TextStyle(fontSize: 13)),
+        ),
+      ],
+    ),
+  );
 }
 
 /// Title + body + confirm/cancel — used for the fetch-consent gate.
@@ -598,9 +661,10 @@ class _ConsentDialog extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 12),
           Text(body, style: const TextStyle(fontSize: 13.5, height: 1.35)),
           const SizedBox(height: 18),
@@ -608,12 +672,14 @@ class _ConsentDialog extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: Text(l.cancel)),
+                onPressed: () => Navigator.pop(context, false),
+                child: Text(l.cancel),
+              ),
               const SizedBox(width: 8),
               FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: Text(confirmLabel)),
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(confirmLabel),
+              ),
             ],
           ),
         ],
@@ -637,9 +703,14 @@ class _InsecureWarn extends StatelessWidget {
         const Icon(Icons.gpp_maybe_rounded, size: 16, color: amber),
         const SizedBox(width: 6),
         Flexible(
-          child: Text(label,
-              style: const TextStyle(
-                  fontSize: 12.5, color: amber, fontWeight: FontWeight.w600)),
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: amber,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
       ],
     );
@@ -657,24 +728,58 @@ class _InsecureWarn extends StatelessWidget {
 // survivor (Reality / Hysteria2 / XHTTP). A mixed profile that still has a
 // survivor does NOT warn (the cascade can fail over to it).
 bool _transportWidelyBlockedNode(ParsedNode n) {
-  final cfg = n.isConfig ? n.config! : {'outbounds': [n.outbound]};
+  final cfg = n.isConfig
+      ? n.config!
+      : {
+          'outbounds': [n.outbound],
+        };
   final fams = familiesFromConfig(cfg).values;
   return fams.isNotEmpty && fams.every(transportWidelyBlocked);
 }
 
+/// True if [n] is an AmneziaWG endpoint (Jc/Jmin/S1-4/H1-4 obfuscation) but the awg
+/// bridge binary isn't installed. sing-box dials only PLAIN WireGuard, so without
+/// the bridge the app falls back to vanilla WG — which an AmneziaWG server rejects
+/// (the handshake never completes). The honest pre-connect signal so a user isn't
+/// left guessing why "it won't connect / ping never measures" (a plain WG .conf,
+/// by contrast, works natively).
+bool _amneziaNeedsBridge(ParsedNode n) {
+  if (!n.isConfig) return false;
+  // `endpoints` is verbatim from an imported config and is NOT validated upstream
+  // (ShareLink only guards `outbounds`), so `as List` would THROW on a hostile
+  // `"endpoints": {}` / `"x"` / 5 and crash the preview. `is List` filters instead.
+  final raw = n.config?['endpoints'];
+  final eps = raw is List ? raw : const [];
+  final isAmnezia = eps.any((e) => e is Map && AmneziaConfig.needsAmnezia(e));
+  return isAmnezia && !File(CorePaths.awg()).existsSync();
+}
+
 bool _configRoutesDirect(Map cfg) {
   const proxyTypes = {
-    'vless', 'vmess', 'trojan', 'hysteria2', 'tuic', 'shadowsocks',
-    'shadowtls', 'anytls', 'socks', 'http', 'wireguard'
+    'vless',
+    'vmess',
+    'trojan',
+    'hysteria2',
+    'tuic',
+    'shadowsocks',
+    'shadowtls',
+    'anytls',
+    'socks',
+    'http',
+    'wireguard',
   };
-  final outs = ((cfg['outbounds'] as List?) ?? const []).whereType<Map>().toList();
-  if (!outs.any((o) => proxyTypes.contains(o['type']))) return true; // no proxy at all
+  final outs = ((cfg['outbounds'] as List?) ?? const [])
+      .whereType<Map>()
+      .toList();
+  if (!outs.any((o) => proxyTypes.contains(o['type'])))
+    return true; // no proxy at all
   Map? byTag(String? t) {
     for (final o in outs) {
       if (o['tag']?.toString() == t) return o;
     }
     return null;
   }
+
   // Resolve a tag to its effective leaf type, following selector/urltest default.
   String? leaf(String? tag, [int depth = 0]) {
     if (tag == null || depth > 6) return null;
@@ -684,7 +789,8 @@ bool _configRoutesDirect(Map cfg) {
     if (t == 'selector' || t == 'urltest') {
       final members =
           (o['outbounds'] as List?)?.whereType<String>().toList() ?? const [];
-      final def = o['default']?.toString() ??
+      final def =
+          o['default']?.toString() ??
           (members.isNotEmpty ? members.first : null);
       return leaf(def, depth + 1);
     }
@@ -692,9 +798,11 @@ bool _configRoutesDirect(Map cfg) {
   }
 
   final route = cfg['route'];
-  if (route is! Map) return false; // no route block → first outbound (a proxy) wins
+  if (route is! Map)
+    return false; // no route block → first outbound (a proxy) wins
   // Effective final: explicit route.final, else sing-box uses the first outbound.
-  final eff = leaf(route['final']?.toString()) ??
+  final eff =
+      leaf(route['final']?.toString()) ??
       leaf(outs.isNotEmpty ? outs.first['tag']?.toString() : null);
   if (eff == 'direct' || eff == 'block') return true;
   // Destination/identity matchers that genuinely NARROW which traffic a rule
@@ -702,16 +810,32 @@ bool _configRoutesDirect(Map cfg) {
   // whose ONLY matcher is one of those still catches ~all browsing, so a hostile
   // config hides an all-direct rule behind e.g. `network:["tcp","udp"]`.
   const narrowing = {
-    'domain', 'domain_suffix', 'domain_keyword', 'domain_regex', 'geosite',
-    'rule_set', 'ip_cidr', 'geoip', 'source_ip_cidr', 'ip_is_private',
-    'process_name', 'process_path', 'package_name', 'wifi_ssid', 'port',
-    'source_port', 'clash_mode', 'inbound', 'user'
+    'domain',
+    'domain_suffix',
+    'domain_keyword',
+    'domain_regex',
+    'geosite',
+    'rule_set',
+    'ip_cidr',
+    'geoip',
+    'source_ip_cidr',
+    'ip_is_private',
+    'process_name',
+    'process_path',
+    'package_name',
+    'wifi_ssid',
+    'port',
+    'source_port',
+    'clash_mode',
+    'inbound',
+    'user',
   };
   bool listHas(Object? v, Set<String> globals) {
     if (v is List) return v.any((e) => globals.contains('$e'.trim()));
     if (v is String) return globals.contains(v.trim());
     return false;
   }
+
   final rules =
       (route['rules'] as List?)?.whereType<Map>().toList() ?? const <Map>[];
   for (final r in rules) {
@@ -720,7 +844,8 @@ bool _configRoutesDirect(Map cfg) {
     // A rule routing ~ALL traffic to direct/block = no protection. Catch: no
     // narrowing matcher; a global IP (0.0.0.0/0, ::/0); or an all-matching domain
     // matcher ("", ".", ".*") an attacker hides behind to look scoped.
-    final routesAll = !r.keys.any((k) => narrowing.contains(k)) ||
+    final routesAll =
+        !r.keys.any((k) => narrowing.contains(k)) ||
         listHas(r['ip_cidr'], const {'0.0.0.0/0', '::/0'}) ||
         listHas(r['domain_suffix'], const {'', '.'}) ||
         listHas(r['domain_keyword'], const {''}) ||
@@ -741,7 +866,9 @@ bool _regexCatchAll(Object? v) {
     try {
       final re = RegExp('$rx');
       if (sentinels.every(re.hasMatch)) return true;
-    } catch (_) {/* invalid regex → not a catch-all */}
+    } catch (_) {
+      /* invalid regex → not a catch-all */
+    }
   }
   return false;
 }
@@ -760,7 +887,8 @@ String? _soleUrl(String s) {
 // often UTF-16), falling back to UTF-8 then latin1 so nothing throws.
 String _decodeBytes(List<int> b) {
   if (b.length >= 2 && b[0] == 0xFF && b[1] == 0xFE) return _utf16(b, le: true);
-  if (b.length >= 2 && b[0] == 0xFE && b[1] == 0xFF) return _utf16(b, le: false);
+  if (b.length >= 2 && b[0] == 0xFE && b[1] == 0xFF)
+    return _utf16(b, le: false);
   try {
     return utf8.decode(b);
   } catch (_) {

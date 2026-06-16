@@ -88,9 +88,16 @@ const
 function InternetSetOption(hInet, dwOption, lpBuffer, dwBufLen: Integer): Boolean;
   external 'InternetSetOptionW@wininet.dll stdcall';
 
-function StartsWithLoopback(const s: String): Boolean;
+function IsOwnLoopbackProxy(const s: String): Boolean;
 begin
-  Result := (Pos('127.0.0.1', s) = 1) or (Pos('localhost', s) = 1);
+  // True ONLY for OUR OWN mixed endpoint (127.0.0.1:2080 — mirrors the runner's
+  // IsOwnLoopback and SingBoxConfig.mixedPort). NOT any loopback: a proxy the user
+  // set themselves (cntlm/Burp on another port, or a per-protocol value whose http
+  // leg is loopback) legitimately mentions 127.0.0.1 and must be left untouched,
+  // never disabled as if it were our dead pointer. The specific :2080 port is the
+  // anchor; Pos tolerates a scheme prefix ('http://127.0.0.1:2080').
+  Result := (Pos('127.0.0.1:2080', s) > 0) or (Pos('localhost:2080', s) > 0) or
+            (Pos('[::1]:2080', s) > 0);
 end;
 
 // Mirror the native RestoreSystemProxy: put the user's ORIGINAL proxy back from
@@ -115,10 +122,11 @@ begin
     changed := True;
   end
   else if RegQueryStringValue(HKCU, InetKey, 'ProxyServer', curServer)
-          and StartsWithLoopback(curServer) then
+          and IsOwnLoopbackProxy(curServer) then
   begin
-    // Anchored (starts-with) so a real third-party proxy that merely mentions
-    // 127.0.0.1 in a later protocol field is left untouched.
+    // Only OUR OWN dead :2080 pointer is cleared — a proxy the user set themselves
+    // (even one whose http= leg is on loopback) is on a different port, so it is
+    // not matched and is left untouched.
     RegWriteDWordValue(HKCU, InetKey, 'ProxyEnable', 0);
     changed := True;
   end;

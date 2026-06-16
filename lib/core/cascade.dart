@@ -174,6 +174,35 @@ bool freezeImmune(String? family) {
       f.endsWith('-xhttp');
 }
 
+/// Pick the next front domain / SNI from [pool] not yet [tried] (and ≠ [current]),
+/// or null when exhausted — for rotating a BURNED SNI off a path. HONEST CONSTRAINT
+/// (why this takes an explicit pool, not "any domain"): a REALITY node's
+/// `server_name` is the destination the SERVER is pinned to mimic, so a client can
+/// NOT freely rotate it — a mismatched SNI fails the Reality handshake. This is for
+/// (a) plain-TLS / XHTTP fronts an author listed as alternatives and (b) the
+/// server-less desync engine's DECOY SNI (gosuslugi.ru → another never-blocked
+/// RU-gov/corp host). The caller must only feed it a pool valid for the transport.
+/// PURE.
+String? nextFront(String? current, List<String> pool, Set<String> tried) {
+  for (final f in pool) {
+    if (f != current && !tried.contains(f)) return f;
+  }
+  return null;
+}
+
+/// Never-blocked RU-gov / big-corp SNIs the desync engine can use as its fake-TLS
+/// DECOY (a stateful/whitelist-leaning ТСПУ classifies the flow as benign) — and
+/// the caller rotates through them via [nextFront] when one decoy gets classified.
+/// These are DECOY SNIs (the real split ClientHello still carries the true host),
+/// never a Reality dest. Kept short + high-trust on purpose.
+const decoySnis = <String>[
+  'gosuslugi.ru',
+  'mail.ru',
+  'vk.com',
+  'yandex.ru',
+  'gov.ru',
+];
+
 /// True iff [family] is a plain VLESS that ISN'T wrapped in Reality/XHTTP (the
 /// only VLESS forms that survive the Dec-2025 signature block).
 bool _isBareVless(String f) =>
@@ -238,14 +267,15 @@ FreezeAction decideFreeze({
 /// Selectors/urltests/direct/block/dns are skipped (not proxy leaves). Pass the
 /// result into [planCascade] as `families`; null there falls back to raw type.
 /// True iff a wireguard outbound/endpoint carries AmneziaWG obfuscation — stashed
-/// under `_amneziawg`, or inlined as the jc/jmin/s1-4/h1-4 knobs. PURE.
-bool _hasAmnezia(Map o) {
-  if (o['_amneziawg'] != null) return true;
-  for (final k in const ['jc', 'jmin', 'jmax', 's1', 's2', 'h1', 'h2', 'h3', 'h4']) {
-    if (o[k] != null) return true;
-  }
-  return false;
-}
+/// under `_amneziawg` by [ShareLink]. MUST match [AmneziaConfig.needsAmnezia] (the
+/// bridge reads the params from `_amneziawg`): if this flagged the RAW inlined
+/// jc/jmin knobs too, an inlined-but-unwrapped config would be classified a tier-2
+/// SURVIVOR yet have no bridge + no "needs the awg binary" warning — a false-trust
+/// the cascade would lean on. The wrapper is the only form the bridge can dial, so
+/// detect only it; an inlined hand-written config classifies as plain (blocked)
+/// wireguard, which is honest (and sing-box FATALs the unknown knobs at preflight).
+/// PURE.
+bool _hasAmnezia(Map o) => o['_amneziawg'] != null;
 
 Map<String, String> familiesFromConfig(Map<String, dynamic> cfg) {
   final out = <String, String>{};
@@ -381,12 +411,24 @@ class CascadePlan {
   String probeFor(String candidate) => probeTargets[candidate] ?? candidate;
 }
 
+/// Update a transport family's rolling SURVIVAL score (EWMA in 0..1) after a dark
+/// episode's outcome — the heart of the cascade's network memory. α=0.4 weights
+/// recent reality enough to adapt to a network change (Wi-Fi↔operator) in ~3-4
+/// episodes while damping a one-off blip. A never-seen family starts NEUTRAL (0.5)
+/// so the baked survivability tier still leads until evidence accrues. PURE — the
+/// controller owns persistence + when to call this.
+double transportScoreAfter(double? current, bool survived) {
+  const alpha = 0.4;
+  return alpha * (survived ? 1.0 : 0.0) + (1 - alpha) * (current ?? 0.5);
+}
+
 CascadePlan planCascade(
   List<ProxyGroup> groups,
   Set<String> tried, {
   Map<String, String>? families,
   Set<String>? insecure,
   bool freezeContext = false,
+  Map<String, double>? scores,
 }) {
   if (groups.isEmpty) return const CascadePlan();
   final byName = {for (final g in groups) g.name: g};
@@ -467,6 +509,15 @@ CascadePlan planCascade(
           final fa = freezeImmune(familyOf(a)) ? 0 : 1;
           final fb = freezeImmune(familyOf(b)) ? 0 : 1;
           if (fa != fb) return fa.compareTo(fb);
+        }
+        // LEARNED: within the same tier (+ freeze handling), prefer the family that
+        // has SURVIVED most on this network lately — the cascade learns what gets
+        // through here. A 0.05 deadband keeps the L4-diversity prior meaningful when
+        // the scores are ~tied (and absent scores leaves the order unchanged).
+        if (scores != null) {
+          final la = scores[familyOf(a)] ?? 0.5;
+          final lb = scores[familyOf(b)] ?? 0.5;
+          if ((la - lb).abs() > 0.05) return lb.compareTo(la);
         }
         final da = _typeIsQuic(rawTypeOf(a)) != curQuic ? 0 : 1;
         final db = _typeIsQuic(rawTypeOf(b)) != curQuic ? 0 : 1;

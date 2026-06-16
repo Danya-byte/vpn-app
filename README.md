@@ -1,244 +1,265 @@
 # vpn_app
 
-**English** · [Русский](README.ru.md)
+**Русский** · [English](README.en.md)
 
-A liquid-glass, censorship-resistant VPN client for Windows (cross-platform later),
-built in Flutter on top of the **sing-box** core (+ a bundled **xray** bridge for the
-transports sing-box can't dial). Open-source, no telemetry. Tuned for Russia's ТСПУ DPI.
+VPN-клиент в стиле «жидкого стекла», устойчивый к цензуре, для Windows (кроссплатформа — позже),
+на Flutter поверх ядра **sing-box** (+ забандленный мост **xray** для транспортов, которые sing-box
+не умеет). Открытый код, без телеметрии. Заточен под российский DPI (ТСПУ).
 
-> Status: active development, Windows desktop first. The app is a GUI + config engine over
-> proven proxy cores — it does **not** reimplement protocols. The core path (import →
-> generate → route system traffic) works and is schema- + traffic-verified against the real
-> binaries.
+> Статус: активная разработка, в первую очередь Windows. Приложение — это GUI + движок конфигов
+> поверх проверенных прокси-ядер; протоколы оно **не** переписывает. Основной путь (импорт →
+> генерация → маршрутизация системного трафика) работает и проверен по схеме и по реальному трафику
+> на настоящих бинарниках.
 
-## What it can do
+## Что умеет
 
-### Protocols & transports
-Anything the bundled cores can dial, importable **and** runnable:
-- **VLESS + XTLS-Vision + Reality** — uTLS-masquerades as a real allowlisted site, no own cert.
-- **Hysteria2** (QUIC/UDP) with **Brutal** congestion control (constant bandwidth under ТСПУ loss)
-  and **multi-port / port-hopping** — rotates across a shared port range to dodge port-based throttling.
-- **TUIC v5**, **Trojan**, **VMess**, **Shadowsocks** (incl. 2022 ciphers), **AnyTLS**.
-- **WireGuard**, and **AmneziaWG** obfuscation (Jc/Jmin/Jmax/S/H) via a userspace bridge
-  (drop `core/windows/awg.exe`; absent → detected and skipped, never a fake "connected").
-- **XHTTP / SplitHTTP** via a bundled **xray** bridge — the sub-16 KB-freeze transport sing-box
-  can't do; plus **gRPC, WebSocket, HTTPUpgrade, HTTP/2**.
+### Протоколы и транспорты
+Всё, что умеют набортные ядра, — и импортируется, **и** реально запускается:
+- **VLESS + XTLS-Vision + Reality** — uTLS-маскировка под реальный разрешённый сайт, без своего серта.
+- **Hysteria2** (QUIC/UDP) с **Brutal** congestion control (стабильная полоса при искусственных
+  потерях ТСПУ) и **мульти-порт / port-hopping** — крутится по диапазону портов, чтобы уходить от
+  троттлинга по порту.
+- **TUIC v5**, **Trojan**, **VMess**, **Shadowsocks** (в т.ч. шифры 2022), **AnyTLS**.
+- **WireGuard** и обфускация **AmneziaWG** (Jc/Jmin/Jmax/S/H) через userspace-мост (положи
+  `core/windows/awg.exe`; если его нет — определяется и пропускается, без ложного «подключено»).
+- **XHTTP / SplitHTTP** через забандленный мост **xray** — транспорт против «16 КБ-заморозки»,
+  который sing-box не тянет; плюс **gRPC, WebSocket, HTTPUpgrade, HTTP/2**.
 
-### Import anything
-Share links (`vless/vmess/trojan/ss/hysteria2/tuic/anytls`), **base64 subscriptions**, full
-**sing-box JSON** (run whole, auto-migrated to the current schema), **Clash / Clash.Meta YAML**,
-and **WireGuard / AmneziaWG `.conf`** — added via a link, a **subscription URL** (auto-refresh
-every 6 h + one-tap manual, with used/expiry from the panel header), the clipboard, a file picker,
-**drag-and-drop**, a **QR code** (drop an image **or scan the screen** — no camera), or a
-**deep link** (`vpn://` / `clash://` / `hiddify://` / `sing-box://`, both cold-launch and while
-already running). A config from an untrusted source (drop / QR / deep link) is **previewed and
-gated** before connecting — protocol, server, SNI, an *insecure* (no cert check) badge, a loud
-**"routes everything DIRECT"** warning for a config that would tunnel nothing, and a heads-up when
-the server rides a transport that's **widely blocked in RF** (plain WireGuard / Shadowsocks). Your
-whole profile set can also be **backed up / synced over WebDAV** (HTTPS, your own cloud) — one tap
-to restore after a reinstall or onto a second device.
+### Импорт чего угодно
+Share-ссылки (`vless/vmess/trojan/ss/hysteria2/tuic/anytls`), **base64-подписки**, целые
+**sing-box JSON** (запускаются как есть, автомиграция на актуальную схему), **Clash / Clash.Meta
+YAML** и **WireGuard / AmneziaWG `.conf`** — через ссылку, **URL подписки** (автообновление раз в 6 ч
++ ручное в один тап, с остатком/сроком из заголовка панели), буфер обмена, выбор файла,
+**drag-and-drop**, **QR-код** (брось картинку **или отсканируй экран** — камера не нужна) или
+**deep link** (`vpn://` / `clash://` / `hiddify://` / `sing-box://`, и при холодном старте, и на лету).
+Конфиг из недоверенного источника (drop / QR / deep link) **показывается и подтверждается** перед
+подключением — протокол, сервер, SNI, бейдж *insecure* (без проверки серта — его можно убрать,
+**закрепив TLS-сертификат сервера**: вставь его один раз, и соединение проверяется ровно по этому
+серту, отменяемо в приложении), громкое предупреждение
+**«весь трафик идёт НАПРЯМУЮ»** для конфига, который ничего не туннелирует, и подсказка, когда сервер
+использует транспорт, **массово заблокированный в РФ** (обычный WireGuard / Shadowsocks). Весь набор
+профилей можно **бэкапить / синхронизировать по WebDAV** (HTTPS, в своё облако) — восстановление в
+один тап после переустановки или на втором устройстве.
 
-**Share your setup** (Profiles → ⋮ → Share). *For any client* makes standard links any VPN app can
-import — it even pulls the individual servers out of a whole config. *With my settings* makes a
-single `vpn://` link (or QR) that — in this app — carries your servers **plus** your DPI-bypass and
-per-app routing, so a friend gets your whole working setup in one paste. The link is compact
-(compressed), never includes your private data, and the recipient always **previews and consents**
-before anything applies or connects.
+**Поделиться своим сетапом** (Профили → ⋮ → Поделиться). *Для любого клиента* делает стандартные
+ссылки, которые импортит любой VPN — даже вытаскивает отдельные серверы из целого конфига. *С моими
+настройками* делает одну `vpn://`-ссылку (или QR), которая в нашем приложении несёт твои серверы
+**плюс** обход DPI и пер-апп маршруты, так что друг получает весь твой рабочий сетап в одну вставку.
+Ссылка компактная (сжатая), личные данные в неё не попадают, а получатель всегда **видит превью и
+подтверждает** до того, как что-то применится или подключится.
 
-### Anti-DPI & resilience (the ТСПУ core)
-- **uTLS** with a selectable fingerprint pool (chrome / firefox / safari / edge / ios / yandex),
-  applied to imported configs too; **TLS ClientHello fragmentation** to split the SNI; ECH plumbing.
-- **Server-less DPI bypass (WinDivert)** — an optional zapret-class packet engine (`winws`) that
-  desyncs the outgoing TLS ClientHello (fake decoy + split/disorder + TTL fooling) so ТСПУ can't
-  read the SNI, unblocking throttled / TLS-DPI sites (YouTube, Discord, Rutracker…) with **no
-  server at all**. Needs admin (loads a kernel driver) + the binary (fetched separately, like xray);
-  doesn't help IP-blocked sites (Telegram, X — those still need a foreign exit). Switchable desync
-  method presets so you can find what survives your operator. *Plain TLS fragmentation alone was
-  dropped — ТСПУ reassembles it; this is the fake+disorder escalation that survives reassembly.*
-- **Transport cascade** — when a path goes dark, auto-hops to a genuinely *different* transport
-  family (Reality ↔ plain-TLS ↔ Hysteria2 ↔ XHTTP) by true signature, **preferring the transports
-  that survive 2026-era blocking** (XHTTP-split / Hysteria2-QUIC / Reality) over the signature-blocked
-  ones (plain VLESS / Shadowsocks / WireGuard).
-- **16 KB foreign-IP "freeze"** detection — catches the throttle that *passes small requests but
-  stalls big ones* and hops to a transport the freeze can't reach.
-- **Whitelist-mode** detection — when the mobile network collapses to a state allowlist (only RU
-  IPs reachable), it stays connected, latches an amber banner, and stops burning retries.
-- **Hard-network (mobile-operator) mode** — for the "works on home Wi-Fi but not on mobile data"
-  case: one tap forces TLS fragmentation on, keeps the survivor-preferring cascade active, and turns
-  on auto-adapt — surfaced right when the tunnel goes dark, not buried in settings.
-- **Native Telegram unblock** — pins Telegram's *published* DC/relay IP ranges (and its UDP calls,
-  in TUN mode) to the proxy exit, so messages **and** calls ride the tunnel even when Telegram's own
-  IPs are blocked — no MTProto-proxy juggling.
-- Proactive hop on sustained **latency degradation** before a path is fully cut.
-- **Live censorship-fact feed** — the throttled-domain list + freeze thresholds refresh *through
-  the tunnel* on connect (data-only, signed-in-spirit, hard-clamped), so a new blocking wave is
-  handled without an app update.
-- **Auto-failover** across all your nodes; **seamless reconnect** on Wi-Fi/Ethernet/wake.
+### Анти-DPI и живучесть (ядро под ТСПУ)
+- **uTLS** с выбираемым пулом отпечатков (chrome / firefox / safari / edge / ios / yandex),
+  применяется и к импортным конфигам; **фрагментация TLS ClientHello** для разрезания SNI; провод ECH.
+- **Обход DPI без сервера (WinDivert)** — опциональный пакетный движок класса zapret (`winws`),
+  который десинхронизирует исходящий TLS ClientHello (фейковая приманка + сплит/дизордер + обман по
+  TTL), чтобы ТСПУ не прочитал SNI — разблокирует тротлящиеся / TLS-DPI сайты (YouTube, Discord,
+  Rutracker…) **вообще без сервера**. Нужен админ (грузит kernel-драйвер) + бинарь (тянется отдельно,
+  как xray); НЕ помогает при IP-блоке (Telegram, X — им нужен зарубежный выход). Пресеты метода
+  десинка переключаются, чтобы подобрать то, что переживает твоего оператора. *Чистую фрагментацию
+  TLS убрали — ТСПУ её пересобирает; это эскалация с фейком+дизордером, переживающая пересборку.*
+- **Каскад транспортов** — когда путь «темнеет», автоматически прыгает на принципиально *другое*
+  семейство (Reality ↔ обычный TLS ↔ Hysteria2 ↔ XHTTP) по истинной сигнатуре, **предпочитая
+  транспорты, которые переживают блокировки 2026** (XHTTP-сплит / Hysteria2-QUIC / Reality), и уводя
+  от заблокированных по сигнатуре (обычный VLESS / Shadowsocks / WireGuard).
+- Детект **«16 КБ-заморозки» иностранного IP** — ловит троттлинг, который *пропускает мелкие запросы,
+  но стопорит крупные*, и прыгает на транспорт, до которого заморозка не дотягивается.
+- Детект **whitelist-режима** — когда мобильная сеть схлопывается до госсписка (доступны только
+  RU-IP), остаётся на связи, поднимает амбер-баннер и перестаёт жечь попытки впустую.
+- **Hard-network (режим под оператора)** — для случая «на домашнем вайфае работает, на мобильном нет»:
+  один тап форсит фрагментацию TLS, держит каскад с предпочтением выживающих транспортов и включает
+  авто-адаптацию — появляется ровно тогда, когда туннель потемнел, а не закопано в настройках.
+- **Нативная разблокировка Telegram** — Telegram в России блокируется по *IP* (диапазоны его
+  дата-центров отбрасываются, звонки душатся), поэтому serverless SNI-обход до него не достучится.
+  Вместо этого приложение **автоматически** при подключении пинит *опубликованные* CIDR DC/релеев
+  Telegram + домены на твой серверный выход — ничего настраивать не надо, никаких MTProto-ссылок.
+  **Как пользоваться:** добавь сервер и нажми «Подключить» — Telegram просто работает. **Сообщения**
+  идут через туннель в любом режиме; **аудио/видео-звонки** требуют режима **TUN (на всё устройство)**,
+  потому что звонки идут по UDP, который ловит только TUN (system-proxy — только TCP → сообщения да,
+  звонки нет). Нужен рабочий сервер (зарубежный выход) — serverless-обход тут не поможет, блок на
+  уровне IP, а не SNI.
+  **Совет (звонки в любом режиме):** у самого Telegram есть встроенный **SOCKS5-прокси** — укажи его
+  на `127.0.0.1:2080` (Telegram → Настройки → Продвинутые → Тип соединения → Использовать прокси →
+  SOCKS5). Локальный прокси приложения слушает этот порт **всегда** — и в proxy-, и в TUN-режиме, — так
+  что Telegram сам пойдёт через туннель — **и сообщения, и звонки** (звонки он релеит через прокси) —
+  не завися от режима приложения.
+- Проактивный hop при устойчивой **деградации задержки** до того, как путь полностью перекроют.
+- **Живой фид фактов цензуры** — список задушенных доменов + пороги заморозки обновляются *через
+  туннель* при подключении (только данные, жёстко заклампленные), так что новая волна блокировок
+  отрабатывается без обновления приложения.
+- **Автофейловер** по всем твоим нодам; **бесшовное переподключение** при смене сети / выходе из сна.
 
-### Routing & DNS
-- **Smart mode**: RU + private → direct, the rest → tunnel; sanctioned RU sites stay direct (so
-  they don't reverse-geo-block your foreign exit); ad/tracker blocking on by default.
-- **Custom routing rules** — force any domain (and its sub-domains), exact host, or IP/CIDR to
-  **Proxy / Direct / Block**; your rules win over Smart mode, and apply live.
-- **Per-app split-tunnel** — by process name, **bidirectional** (force an app *out* of the VPN, or
-  *into* it), TUN mode. Pick the app from disk with a Browse button or a common-app preset
-  (Telegram / Chrome / Discord / Steam …) — no need to know the exact `.exe`.
-- `urltest` auto-pick + manual selector groups, switchable live in the UI.
-- **Bundled local rule-sets** (no startup GitHub fetch — that deadlocks the core in RF).
-- **Split DNS** — foreign → DoH through the tunnel, RU → a direct resolver; forced IPv4 (RF has no
-  reliable v6); DNS-leak fences; legacy configs' DNS auto-migrated to the current schema.
-- **Optional FakeIP** (TUN) — answers apps instantly with a placeholder address and resolves the
-  real one at the exit: faster first-load, no DNS leak. Experimental, off by default.
+### Маршрутизация и DNS
+- **Smart-режим**: RU + приватные → напрямую, остальное → туннель; санкционные RU-сайты остаются
+  напрямую (чтобы не словить reverse-geo-block иностранного exit); блокировка рекламы/трекеров по умолч.
+- **Свои правила маршрутизации** — любой домен (и поддомены), точный хост или IP/CIDR → **Прокси /
+  Напрямую / Блок**; твои правила важнее Smart-режима и применяются вживую.
+- **Per-app split-tunnel** — по имени процесса, **в обе стороны** (вытолкнуть приложение *из* VPN или
+  загнать *в* VPN), режим TUN. Приложение можно выбрать с диска кнопкой «Обзор» или тапнуть пресет
+  частого (Telegram / Chrome / Discord / Steam …) — не нужно знать точный `.exe`.
+- `urltest` (авто-выбор) + ручные группы-селекторы, переключаются вживую в UI.
+- **Локальные забандленные rule-set'ы** (без скачивания с GitHub на старте — в РФ это вешает ядро).
+- **Split-DNS** — иностранные домены → DoH через туннель, RU → прямой резолвер; форс IPv4 (в РФ нет
+  надёжного v6); защита от DNS-утечек; DNS старых конфигов автомигрируется на актуальную схему.
+- **Опциональный FakeIP** (TUN) — мгновенный ответ приложению фиктивным адресом, реальный резолвится
+  на выходе: быстрее первая загрузка, без утечки DNS. Экспериментально, по умолчанию выключено.
 
-### Into the OS
-- **System proxy** (no admin) — points Windows at the local inbound; your existing proxy is backed
-  up and restored on disconnect/uninstall.
-- **TUN** — a system-wide Wintun adapter (`auto_route`/`strict_route`, dual-stack capture) catching
-  *all* traffic incl. UDP; needs admin (one-tap "restart as administrator").
-- **WFP kill-switch** — a fail-closed Windows-firewall fence that blocks *all* non-tunnel egress so
-  a dead/blocked tunnel can't leak. **Opt-in & experimental** — verify with `tool/leak-test.ps1` on
-  your hardware before relying on it.
+### В систему
+- **Системный прокси** (без админа) — направляет Windows на локальный inbound; твой прежний прокси
+  бэкапится и восстанавливается при отключении/удалении.
+- **TUN** — системный Wintun-адаптер (`auto_route`/`strict_route`, dual-stack), ловит *весь* трафик
+  включая UDP; нужен админ (в один тап «перезапустить от администратора»).
+- **WFP kill-switch** — firewall-фенс «fail-closed», блокирует *весь* не-туннельный egress, чтобы
+  мёртвый/заблокированный туннель не протёк. **Опционально и экспериментально** — перед тем как
+  полагаться, прогони `tool/leak-test.ps1` на своём железе.
 
-### Generate your own exit
-In-app **ServerGen** makes a **VLESS + Reality (+ Hysteria2) server** config, the matching client
-link, and a one-paste VPS setup script — even a **domestic-relay 2-hop chain** (a RU-cloud relay
-fronting a big-RU SNI → a foreign exit), so the observed connection looks like ordinary domestic
-traffic.
+### Сгенерируй свой выходной сервер
+Встроенный **ServerGen** делает конфиг **сервера VLESS + Reality (+ Hysteria2)**, подходящую
+клиентскую ссылку и скрипт настройки VPS «в одну вставку» — вплоть до **2-хоповой цепочки через
+домашнее реле** (реле в RU-облаке, фронтящее большой RU-SNI → иностранный exit), чтобы наблюдаемое
+соединение выглядело как обычный домашний трафик.
 
-### Observe & control
-Clash API + an in-app dashboard: live **connections** (host, outbound chain, *which rule matched*,
-per-connection traffic), core logs, **per-server ping + "X of Y alive" pool health**, live policy
-switching, a **connection Diagnostics** probe (DNS-poison / TLS-DPI / TCP-reset, direct vs through
-the tunnel), and a real **Mbps speed test** through the tunnel.
+### Наблюдение и контроль
+Clash API + встроенный дашборд: живые **соединения** (хост, цепочка outbound'ов, *какое правило
+сработало*, трафик по соединению), логи ядра, **пинг по серверам + «X из Y живы»** (здоровье пула),
+переключение политик вживую, проба **диагностики соединения** (DNS-poison / TLS-DPI / TCP-reset,
+напрямую против через туннель), реальный **спидтест (Мбит/с)** через туннель и **пред-коннект замер
+задержки** — тап (в отключённом состоянии) красит достижимость + пинг каждого сервера до того, как ты
+выберешь (резолв через DoH, чтобы отравленный ответ не покрасил мёртвый сервер зелёным).
 
 ### UX
-Liquid-glass design; **one-tap connect** + one-tap mode switch; **honest status** — it shows
-"Checking…" (not a fake green "Connected") when the tunnel is dark, and hides a stale ping/exit-IP;
-a Home banner if you copied a server link; a deferred first-run protection-mode chooser (asked after
-your first connect, not before you even have a server); **learns about a new version on launch** — a
-Home banner + an About notice that open the signed release page (it never auto-downloads or runs an
-installer over a possibly-tampered network); system tray + close-to-tray + launch-at-startup;
-English / Russian, auto-detected.
+Дизайн «жидкое стекло»; **подключение в один тап** + смена режима в один тап; **честный статус** —
+показывает «Проверяю…» (а не фальшивое зелёное «Подключено»), когда туннель тёмный, и прячет
+устаревший пинг/exit-IP; баннер на Home, если скопировал ссылку на сервер; выбор режима защиты —
+**после первого подключения**, а не до того как у тебя вообще появился сервер; **узнаёт о новой
+версии при запуске** — баннер на Home + строка в About открывают подписанную страницу релиза (само
+ничего не качает и не запускает по возможно-подменённой сети); системный трей + сворачивание в трей +
+автозапуск; English / Русский, по локали ОС.
 
-All native integration (OLE drag-and-drop, the system proxy, UAC elevation, the WFP fence, QR
-screen-scan, the network-change watch, warm-start deep links) lives in the Windows runner with
-**no Flutter plugins** — so no Developer Mode is required.
+Вся нативная интеграция (OLE drag-and-drop, системный прокси, UAC-elevation, WFP-фенс, QR-скан экрана,
+слежение за сменой сети, warm-start deep links) живёт в Windows-раннере **без Flutter-плагинов** —
+поэтому режим разработчика Windows не нужен.
 
-## Build (Windows)
+## Сборка (Windows)
 
-Prerequisites: [Flutter](https://docs.flutter.dev/get-started/install/windows) (stable, Dart ≥ 3.12)
-and Visual Studio 2022 with the *Desktop development with C++* workload.
+Требуется: [Flutter](https://docs.flutter.dev/get-started/install/windows) (stable, Dart ≥ 3.12) и
+Visual Studio 2022 с ворклоадом *Desktop development with C++*.
 
 ```sh
-# 1. fetch the SHA-256-pinned cores into core/windows/ (sing-box + xray + wintun) + rule-sets
-#    add -IncludeDesync for the server-less WinDivert DPI-bypass engine (winws + WinDivert)
+# 1. подтянуть SHA-256-пиннутые ядра в core/windows/ (sing-box + xray + wintun) + rule-set'ы
+#    добавь -IncludeDesync для движка обхода DPI без сервера (winws + WinDivert)
 pwsh tool/fetch-cores.ps1 -IncludeXray -IncludeDesync
 
-# 2. run
+# 2. запуск
 flutter run -d windows
 ```
 
-The core binaries + rule-sets are git-ignored; `fetch-cores.ps1` (re)populates them. The app has no
-native plugins, so no special build flags (or Developer Mode) are required.
-(AmneziaWG support additionally needs an Amnezia-aware `awg.exe` in `core/windows/`, fetched
-separately — without it AmneziaWG nodes are detected and skipped.)
+Бинарники ядер и rule-set'ы в .gitignore; `fetch-cores.ps1` их (пере)кладёт. Нативных плагинов нет,
+поэтому особых флагов сборки (и режима разработчика) не требуется. (Для AmneziaWG дополнительно нужен
+Amnezia-совместимый `awg.exe` в `core/windows/`, тянется отдельно — без него AmneziaWG-ноды
+определяются и пропускаются.)
 
-### Package & install
-
-```sh
-pwsh tool/package.ps1      # release build (version/commit stamped) → bundles cores + rule-sets +
-                           # LICENSE/NOTICES → dist/vpn_app-windows-x64.zip + .sha256, and an
-                           # Inno Setup installer (dist/vpn_app-setup-<ver>.exe) if iscc is found.
-```
-
-The zip is extract-and-run — the cores sit next to `vpn_app.exe` and are resolved exe-relative.
-System-proxy mode needs no admin; TUN mode prompts for elevation on demand.
-
-The installer handles **in-place updates over a running app**: before copying files it stops
-`vpn_app.exe` and every core (`sing-box`, `xray`, `winws`, `awg`) so an update can't fail on a
-locked file — most importantly `winws.exe`, which keeps the WinDivert kernel driver loaded. The
-uninstaller stops the same set so the driver unloads and the files delete cleanly.
-
-### Cut a release
-
-CI publishes a GitHub Release when a push to `main` carries a **version marker in the commit
-message** — `[v1.2]`, `[v1.2.3]`, or with a channel suffix `[v1.2 beta]` / `[v1.0.2-rc1]`
-(a space becomes `-`: `[v1.2 beta]` → tag `v1.2-beta`). No git tag needed:
+### Упаковка и установка
 
 ```sh
-git commit -m "installer + RF hardening [v1.2 beta]"
-git push origin main          # → CI: analyze + test → build zip + installer + .sha256
-                              #   → creates tag v1.2-beta + the GitHub Release
+pwsh tool/package.ps1      # release-сборка (со штампом версии/коммита) → бандлит ядра + rule-set'ы +
+                           # LICENSE/NOTICES → dist/vpn_app-windows-x64.zip + .sha256, и инсталлятор
+                           # Inno Setup (dist/vpn_app-setup-<ver>.exe), если найден iscc.
 ```
-A normal push (no `[v…]` marker) builds nothing. The marker's version is stamped into the build,
-installer name, and About so they match the tag. (`.github/workflows/release.yml` also has a manual
-`workflow_dispatch`.) Releases ship **unsigned** with a published `.sha256`.
 
-## Project layout
+Zip — «распаковал и запустил»: ядра лежат рядом с `vpn_app.exe` и резолвятся относительно него.
+System-proxy не требует админа; TUN запрашивает elevation по необходимости.
+
+Инсталлятор умеет **обновление поверх запущенного приложения**: перед копированием файлов он
+останавливает `vpn_app.exe` и все ядра (`sing-box`, `xray`, `winws`, `awg`), чтобы обновление не
+упёрлось в залоченный файл — в первую очередь `winws.exe`, который держит загруженным kernel-драйвер
+WinDivert. Деинсталлятор останавливает тот же набор, чтобы драйвер выгрузился и файлы удалились чисто.
+
+### Выпустить релиз
+
+CI публикует GitHub Release, когда пуш в `main` несёт **маркер версии в сообщении коммита** —
+`[v1.2]`, `[v1.2.3]` или с суффиксом канала `[v1.2 beta]` / `[v1.0.2-rc1]` (пробел становится `-`:
+`[v1.2 beta]` → тег `v1.2-beta`). Git-тег руками не нужен:
+
+```sh
+git commit -m "инсталлятор + упрочнение под РФ [v1.2 beta]"
+git push origin main          # → CI: analyze + test → сборка zip + инсталлятор + .sha256
+                              #   → создаёт тег v1.2-beta и сам GitHub Release
+```
+Обычный пуш (без маркера `[v…]`) ничего не собирает. Версия из маркера штампуется в сборку, имя
+инсталлятора и About, чтобы совпадали с тегом. (В `.github/workflows/release.yml` есть и ручной
+`workflow_dispatch`.) Релизы выходят **без подписи**, с опубликованным `.sha256`.
+
+## Структура проекта
 
 ```
 lib/
-  core/        config engine, share-link/clash/wireguard parsers, xray + AmneziaWG bridges,
-               cascade/watchdog, censorship-fact feed, core process manager, Clash API client
-  features/    home · activity · settings · root (pages) + the profiles sheet
-  widgets/     glass.dart — the reusable glass kit
-  l10n/        ARB translations (en, ru) + generated AppLocalizations
-core/windows/  bundled sing-box.exe + xray.exe + wintun.dll (git-ignored)
-core/rule-sets/ bundled geoip-ru / geosite-ru / geosite-ads .srs (git-ignored)
-windows/runner/ C++ runner: WFP kill-switch, system proxy, drag-drop, tray, deep links
+  core/        движок конфигов, парсеры share-link/clash/wireguard, мосты xray + AmneziaWG,
+               каскад/watchdog, фид фактов цензуры, менеджер процессов ядра, клиент Clash API
+  features/    home · activity · settings · root (страницы) + лист профилей
+  widgets/     glass.dart — переиспользуемый «стеклянный» набор
+  l10n/        ARB-переводы (en, ru) + сгенерированный AppLocalizations
+core/windows/  забандленные sing-box.exe + xray.exe + wintun.dll (в .gitignore)
+core/rule-sets/ забандленные geoip-ru / geosite-ru / geosite-ads .srs (в .gitignore)
+windows/runner/ C++-раннер: WFP kill-switch, системный прокси, drag-drop, трей, deep links
 tool/          fetch-cores.ps1, package.ps1, installer.iss, leak-test.ps1, verify_store.dart, …
 ```
 
-Architecture: the Flutter UI generates sing-box JSON from profiles and runs the core(s) as managed
-child processes; the UI talks to it over the Clash API. Change log: [CHANGELOG.txt](CHANGELOG.txt).
+Архитектура: Flutter-UI генерирует sing-box JSON из профилей и запускает ядро(а) как управляемые
+дочерние процессы; UI общается с ним по Clash API. Список изменений: [CHANGELOG.txt](CHANGELOG.txt).
 
-## Verify your setup (no trust required)
+## Проверить свою установку (без доверия на слово)
 
-`tool/verify_store.dart` is a **connection doctor** — it takes your real stored profile, runs it
-through the exact app migration, validates it with the bundled core, and proves live traffic flows:
+`tool/verify_store.dart` — «доктор соединения»: берёт твой реальный сохранённый профиль, прогоняет
+через ту же миграцию, что и приложение, валидирует набортным ядром и доказывает, что трафик реально
+идёт через туннель:
 
 ```sh
-dart run tool/verify_store.dart            # generate + sing-box check
-dart run tool/verify_store.dart --connect  # + run the core, prove the exit IP differs, and that
-                                           #   the Clash API rejects anonymous callers
-pwsh tool/leak-test.ps1                     # (admin, TUN + kill-switch ON) prove NO egress leaks
-                                           #   on the physical NIC after a core crash, and that the
-                                           #   fence drops on app close
+dart run tool/verify_store.dart            # генерация + sing-box check
+dart run tool/verify_store.dart --connect  # + запуск ядра, доказать что exit-IP отличается, и что
+                                           #   Clash API отшивает анонимных вызывающих
+pwsh tool/leak-test.ps1                     # (админ, TUN + kill-switch ON) доказать что НЕТ утечки на
+                                           #   физический NIC после краха ядра, и что фенс снимается
+                                           #   при закрытии приложения
 ```
 
-## Security & supply chain
+## Безопасность и цепочка поставки
 
-- **Fails closed, not open** — if the core dies or a transport is blocked, traffic stays pointed at
-  the (now-dead) local proxy and auto-reconnects rather than falling back to the open internet; only
-  a deliberate Stop restores your real system proxy. TUN mode adds the opt-in **WFP kill-switch
-  fence** (verify on your hardware before relying on it).
-- **Pinned, verified cores** — `fetch-cores.ps1` pins exact versions and checks each binary's
-  **SHA-256** before installing, so a poisoned mirror can't swap in a backdoor.
-- **Authenticated control plane** — the Clash API is guarded by a random per-launch secret.
-- **No telemetry**, no phone-home. The update *check* (opt-in) runs through the tunnel so a stale
-  build learns about a fix even where GitHub is blocked direct.
-- **Hostile-import defense** — externally-supplied configs are previewed + consent-gated (never a
-  one-click MITM); link/DNS/AmneziaWG fields are validated/sanitised on import.
-- Releases ship **unsigned** with a published `.sha256` — the hash, against open-source inspectable
-  builds, is the integrity check.
+- **Падает закрыто, не открыто** — если ядро умирает или транспорт заблокирован, трафик остаётся
+  направлен на (уже мёртвый) локальный прокси и идёт автопереподключение, а не тихий откат в открытый
+  интернет; реальный системный прокси возвращается только по явному Stop. В TUN добавляется опциональный
+  **WFP kill-switch** (проверь на своём железе, прежде чем полагаться).
+- **Пиннутые, проверенные ядра** — `fetch-cores.ps1` пинит точные версии и сверяет **SHA-256** каждого
+  бинарника перед установкой, так что отравленное зеркало не подсунет бэкдор.
+- **Аутентифицированный control plane** — Clash API закрыт случайным секретом на каждый запуск.
+- **Без телеметрии**, без звонков домой. Проверка обновлений (опциональная) идёт через туннель, чтобы
+  устаревшая сборка узнала о фиксе даже там, где GitHub заблокирован напрямую.
+- **Защита от враждебного импорта** — конфиги из внешних источников показываются и подтверждаются
+  (никакого MITM в один клик); поля ссылок/DNS/AmneziaWG валидируются/санитизируются при импорте.
+- Релизы выходят **без подписи**, с опубликованным `.sha256` — хеш по открытым инспектируемым сборкам
+  и есть проверка целостности.
 
-## Roadmap
+## Дорожная карта
 
-Done: transport cascade (survivability-ranked) + freeze/whitelist detection, hard-network
-(mobile-operator) one-tap mode, anti-DPI fingerprint pool, server-less WinDivert DPI-desync sidecar
-(winws), censorship-fact feed, custom routing rules, per-app split-tunnel, Hysteria2 multi-port /
-port-hopping, native Telegram unblock, FakeIP DNS, WebDAV profile sync, share-your-setup links + QR,
-in-app update notice, ServerGen, in-app diagnostics/speed-test, SHA-256-pinned cores, installer
-(with in-place-update process kill) + commit-message release trigger, secret-guarded API, fail-closed
-contract. TCP Fast Open and Multipath TCP exist as **advanced opt-in knobs** (off by default; TFO is
-flagged risky on RF mobile / AnyTLS).
-Remaining: on-hardware kill-switch leak verification (before defaulting it on); a pre-connect
-latency probe over the whole profile; hy2 cert pinning; an ECS/ECH UI; share-to-nearby (AirDrop-like);
-macOS & Android builds.
+Сделано: каскад транспортов (ранжирование по выживаемости) + детект заморозки/whitelist, hard-network
+(режим под оператора) в один тап, анти-DPI пул отпечатков, сайдкар обхода DPI без сервера
+(winws/WinDivert), фид фактов цензуры, свои правила маршрутизации, per-app split-tunnel, мульти-порт /
+port-hopping для Hysteria2, нативная разблокировка Telegram, **обучаемая память сети** (каскад
+запоминает, какой транспорт выживает на твоём операторе, и пробует его первым — между запусками) +
+**каскад DoH-резолверов** (стойкий резолв, когда 1.1.1.1 заблокирован) + **эскалация метода десинка**
+в один тап, **пред-коннект замер задержки по всему профилю**, **пиннинг серта Hysteria2/TUIC**
+(+ отмена в приложении), **UI для ECS/ECH**, FakeIP DNS, синхронизация профилей по
+WebDAV, ссылки «поделиться сетапом» + QR, уведомление об обновлении в приложении, ServerGen,
+встроенная диагностика/спидтест, SHA-256-пиннутые ядра, инсталлятор (с убийством процессов при
+обновлении поверх) + триггер релиза по сообщению коммита, секрет на Clash API, fail-closed контракт.
+TCP Fast Open и Multipath TCP есть как **продвинутые опциональные тумблеры** (по умолчанию выключены;
+TFO помечен рискованным для РФ-мобильных / AnyTLS).
+Осталось: проверка kill-switch на утечки на железе (до включения по умолчанию); шер «по близости»
+(как AirDrop); сборки под macOS и Android.
 
-## License
+## Лицензия
 
-**GPL-3.0-or-later** (see [LICENSE](LICENSE)). The app bundles **sing-box** (GPL-3.0) and
-**xray-core** (MPL-2.0); the combined distribution is GPL-3.0-or-later. Third-party components and
-their licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); `tool/package.ps1`
-ships the full GPL text (`COPYING.txt`) and notices inside every release archive.
+**GPL-3.0-or-later** (см. [LICENSE](LICENSE)). Приложение бандлит **sing-box** (GPL-3.0) и
+**xray-core** (MPL-2.0); итоговая поставка — GPL-3.0-or-later. Сторонние компоненты и их лицензии
+перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); `tool/package.ps1` кладёт полный текст
+GPL (`COPYING.txt`) и notices внутрь каждого релизного архива.

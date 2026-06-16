@@ -147,10 +147,12 @@ class CoreController extends Notifier<CoreState> {
   static const int _maxLogLines = 500;
 
   Timer? _netDebounce;
-  Timer? _settingsRestartDebounce; // coalesce live setting changes into 1 restart
+  Timer?
+  _settingsRestartDebounce; // coalesce live setting changes into 1 restart
   Timer? _hop;
   bool _hopping = false;
-  bool _inHealthCheck = false; // re-entrancy guard: a slow probe pass can outlast
+  bool _inHealthCheck =
+      false; // re-entrancy guard: a slow probe pass can outlast
   // the 18s watchdog period, so a second tick must not double-hop.
   // Per-selector consecutive probe failures — a single failed /delay can be a
   // transient cold-handshake blip, so we require 2 in a row before hopping
@@ -164,6 +166,13 @@ class CoreController extends Notifier<CoreState> {
   // cascade hops Reality→Hy2→XHTTP→… once each instead of oscillating; cleared
   // when traffic flows again.
   final Set<String> _triedTransports = {};
+  // Learned per-family SURVIVAL score (EWMA 0..1) — the cascade's network memory.
+  // Survives restarts within a session (NOT cleared in restart(), unlike the
+  // per-episode _triedTransports), so the app learns which transport family gets
+  // through on THIS network and tries it FIRST within its survivability tier. Fed
+  // to planCascade; updated on each hop outcome. In-memory for now (cross-launch
+  // persistence is the next step).
+  final Map<String, double> _transportScores = {};
   // tag → refined anti-DPI family of the LIVE config (Reality vs plain-TLS vs
   // XHTTP — distinctions the coarse Clash `type` erases), computed PRE-bridge so
   // XHTTP isn't mistaken for the `socks` the xray bridge turns it into. Feeds
@@ -232,10 +241,23 @@ class CoreController extends Notifier<CoreState> {
   // down the tunnel — winws is independent of sing-box. Reaped in [_killXray]
   // (the single teardown choke point) so every stop/restart/dispose path covers it.
   Process? _winwsProc;
-  Timer? _desyncReapplyDebounce; // collapse a burst of winws toggle/method changes
-  bool _desyncBusy = false; // a spawn/reconcile is running — serialize (no overlap)
-  bool _desyncPending = false; // a change arrived mid-spawn → loop once more after
-  String? _lastDesyncSig; // method+hostlist winws is RUNNING with (skip no-op churn)
+  Timer?
+  _desyncReapplyDebounce; // collapse a burst of winws toggle/method changes
+  bool _desyncBusy =
+      false; // a spawn/reconcile is running — serialize (no overlap)
+  bool _desyncPending =
+      false; // a change arrived mid-spawn → loop once more after
+  String?
+  _lastDesyncSig; // method+hostlist winws is RUNNING with (skip no-op churn)
+  // ② desync auto-escalation: when the active preset isn't unblocking a site,
+  // [desyncEscalate] advances to the next preset + rotates the ④ decoy SNI and
+  // re-applies. The override holds until the user changes the desync setting (then
+  // reset). Triggered by a RELIABLE signal (the diagnostic / a user tap where the
+  // user can SEE the page didn't open), NOT a fragile always-on canary that could
+  // cycle away from a working preset.
+  String? _desyncAutoStrategy;
+  int _desyncDecoyIdx = 0;
+  final Set<String> _desyncTried = {};
   int _desyncRespawns = 0; // capped self-heal counter for winws deaths
   Timer? _desyncHealthyTimer; // restores the budget once winws survives a while
   // Set by [_bridgeXray] when a member's bridge could NOT be brought up (xray
@@ -281,6 +303,48 @@ class CoreController extends Notifier<CoreState> {
     } catch (_) {}
   }
 
+  // ── ① learned transport memory: persist the per-family survival scores across
+  // launches (a small JSON in the runtime dir) so the cascade KEEPS what it learned
+  // about this install's networks. Best-effort: a read/write failure just falls
+  // back to in-memory / the baked survivability priors.
+  File? _scoresFileCache;
+  File get _scoresFile => _scoresFileCache ??= File(
+        '${CorePaths.runtimeDir().path}${Platform.pathSeparator}transport_scores.json',
+      );
+  Future<void> _loadTransportScores() async {
+    try {
+      final f = _scoresFile;
+      if (!await f.exists()) return;
+      final m = jsonDecode(await f.readAsString());
+      if (m is Map) {
+        m.forEach((k, v) {
+          final d = v is num ? v.toDouble() : double.tryParse('$v');
+          if (d != null && d >= 0 && d <= 1) _transportScores['$k'] = d;
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _saveTransportScores() {
+    // Fire-and-forget ASYNC write off the hot path — a transport hop is restart-free
+    // (a selectProxy on the live selector), so persisting its score must add no
+    // sync-I/O hitch to the painting isolate.
+    try {
+      unawaited(_scoresFile
+          .writeAsString(jsonEncode(_transportScores))
+          .catchError((_) => _scoresFile));
+    } catch (_) {}
+  }
+
+  /// Record a dark-episode outcome into the learned memory + persist it: a hop's
+  /// destination [family] survived, or the family it left went dark.
+  void _recordTransport(String? family, bool survived) {
+    if (family == null || family.isEmpty) return;
+    _transportScores[family] =
+        transportScoreAfter(_transportScores[family], survived);
+    _saveTransportScores();
+  }
+
   // Drop the WFP TUN fence on a DELIBERATE disconnect/give-up. NOT called on the
   // reconnect path — the fence must persist while the core is down so traffic
   // fails CLOSED, and is re-engaged (with the new tunnel LUID) on reconnect.
@@ -295,6 +359,7 @@ class CoreController extends Notifier<CoreState> {
   CoreState build() {
     final rsDir = CorePaths.ruleSetsDir();
     SingBoxConfig.ruleSetDir = rsDir;
+    unawaited(_loadTransportScores()); // ① restore learned memory (off the sync build path)
     // Smart mode references these by local path; if packaging missed them or AV
     // quarantined them, degrade to a rule-set-free config instead of FATAL-ing.
     SingBoxConfig.ruleSetsReady = const [
@@ -320,6 +385,10 @@ class CoreController extends Notifier<CoreState> {
       // reconcile it on every toggle / method change REGARDLESS of connection state.
       if (prev.winwsDesync != next.winwsDesync ||
           prev.desyncStrategy != next.desyncStrategy) {
+        // The user drove the desync → clear any auto-escalation override + budget.
+        _desyncAutoStrategy = null;
+        _desyncTried.clear();
+        _desyncDecoyIdx = 0;
         _scheduleDesyncReapply();
       }
       // A sing-box-config change only matters while a tunnel is actually up.
@@ -340,7 +409,8 @@ class CoreController extends Notifier<CoreState> {
     ref.onDispose(() {
       _proc?.kill();
       _killXray();
-      _winwsProc?.kill(); // winws is tunnel-independent — reaped here, not in _killXray
+      _winwsProc
+          ?.kill(); // winws is tunnel-independent — reaped here, not in _killXray
       _winwsProc = null;
       _netDebounce?.cancel();
       _settingsRestartDebounce?.cancel();
@@ -456,7 +526,8 @@ class CoreController extends Notifier<CoreState> {
     'ENABLE_DEPRECATED_LEGACY_DNS_SERVERS': 'true',
     'ENABLE_DEPRECATED_GEOSITE': 'true',
     'ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS': 'true',
-    'ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM': 'true', // singular (core's name)
+    'ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM':
+        'true', // singular (core's name)
     'ENABLE_DEPRECATED_DNS_RULE_ACTIONS': 'true',
     'ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER': 'true',
     // fromConfig migrates legacy fakeip to the typed server; this is the
@@ -515,7 +586,8 @@ class CoreController extends Notifier<CoreState> {
     _wgDead = false;
     _wgHandshakeFails = 0;
     _desyncRespawns = 0; // fresh winws self-heal budget for this connect
-    _bridgeError = null; // reset even when xray is absent (_bridgeXray won't run)
+    _bridgeError =
+        null; // reset even when xray is absent (_bridgeXray won't run)
     state = state.copyWith(
       status: CoreStatus.starting,
       error: null,
@@ -541,8 +613,9 @@ class CoreController extends Notifier<CoreState> {
     final settings = ref.read(settingsProvider);
     SingBoxConfig.logLevel = settings.logLevel; // user-chosen verbosity
     // Custom DoH resolver, or the RF-safe default (Yandex) when unset.
-    SingBoxConfig.dnsServer =
-        settings.customDns.isEmpty ? '77.88.8.8' : settings.customDns;
+    SingBoxConfig.dnsServer = settings.customDns.isEmpty
+        ? '77.88.8.8'
+        : settings.customDns;
     // Advanced transport knobs (static injection, same pattern as logLevel/dns).
     SingBoxConfig.tunStack = settings.tunStack;
     SingBoxConfig.muxProtocol = settings.muxProtocol;
@@ -660,7 +733,10 @@ class CoreController extends Notifier<CoreState> {
     // Hysteria2 Brutal bandwidth caps (no-op unless the user set them AND a
     // hysteria2 outbound exists). One choke point covers every build path.
     cfg = SingBoxConfig.tuneHysteria2(
-        cfg, settings.hy2UpMbps, settings.hy2DownMbps);
+      cfg,
+      settings.hy2UpMbps,
+      settings.hy2DownMbps,
+    );
     // EDNS Client Subnet (one choke point; no-op unless the user set a subnet).
     cfg = SingBoxConfig.applyEcs(cfg);
     // Snapshot the TRUE per-outbound families for the cascade BEFORE the xray
@@ -866,10 +942,13 @@ class CoreController extends Notifier<CoreState> {
       // bridge — or the fence blacks out XHTTP / Reality-over-XHTTP, which dial
       // out as the xray process (H1). One path per binary; the WFP app-id
       // condition matches by image, so it covers all xray bridge processes.
-      final paths = fencePermitPaths(exe, CorePaths.xray(),
-          xrayAvailable: xrayAvailable,
-          awgExe: CorePaths.awg(),
-          awgAvailable: awgAvailable);
+      final paths = fencePermitPaths(
+        exe,
+        CorePaths.xray(),
+        xrayAvailable: xrayAvailable,
+        awgExe: CorePaths.awg(),
+        awgAvailable: awgAvailable,
+      );
       // tun0 can lag the core's start, so the native engage may miss the LUID on
       // the first try. RETRY here (off the UI thread — each await yields), instead
       // of Sleep-blocking the native platform thread, before giving up.
@@ -885,7 +964,9 @@ class CoreController extends Notifier<CoreState> {
         // unprotected would be a silent fail-OPEN — refuse. _proc?.kill() routes
         // through the identity-guarded _onExit (the _fenceFailed flag → a clear
         // error); clear _restarting so restart() can't relaunch into the failure.
-        _log('kill-switch: WFP fence could NOT install — refusing to run unprotected');
+        _log(
+          'kill-switch: WFP fence could NOT install — refusing to run unprotected',
+        );
         _fenceFailed = true;
         _autoReconnect = false;
         _restarting = false;
@@ -923,7 +1004,8 @@ class CoreController extends Notifier<CoreState> {
     // blocked direct in RF). Fire-and-forget; applies to the NEXT build. A newer
     // doc updates the desync list / freeze probe with no app release.
     Future.microtask(
-        () => ref.read(censorshipFactsProvider.notifier).refresh());
+      () => ref.read(censorshipFactsProvider.notifier).refresh(),
+    );
     // Bringing a TUN up reshuffles routes/adapters → a burst of addr-change
     // events for ~10s. Ignore them so we don't restart the tunnel for its OWN
     // setup churn (the "reconnects every few seconds right after connect" storm).
@@ -977,16 +1059,25 @@ class CoreController extends Notifier<CoreState> {
   /// effective config (method + hostlist) — so a feed version bump or a same-value
   /// settings emit doesn't needlessly churn the WinDivert driver.
   Future<void> _applyDesyncOnce() async {
-    final settings = ref.read(settingsProvider); // freshest, never a stale snapshot
+    final settings = ref.read(
+      settingsProvider,
+    ); // freshest, never a stale snapshot
+    // ②/④ Use the auto-escalated preset + rotated decoy SNI when set, else the
+    // user's chosen preset (with the baked gosuslugi.ru decoy).
+    final strat = _desyncAutoStrategy ?? settings.desyncStrategy;
+    final decoy = _desyncAutoStrategy != null
+        ? decoySnis[_desyncDecoyIdx % decoySnis.length]
+        : null;
     final hostlist = settings.winwsDesync
-        ? DesyncConfig.hostlistContent(
-            [...DesyncConfig.defaultHosts, ...SingBoxConfig.desyncDomains])
+        ? DesyncConfig.hostlistContent([
+            ...DesyncConfig.defaultHosts,
+            ...SingBoxConfig.desyncDomains,
+          ])
         : '';
     // Signature of the desired live state. If winws is already up with this exact
     // config, there's nothing to do — skip the kill+respawn churn.
-    final desiredSig = settings.winwsDesync
-        ? '${settings.desyncStrategy}$hostlist'
-        : 'off';
+    final desiredSig =
+        settings.winwsDesync ? '$strat${decoy ?? ''}$hostlist' : 'off';
     if (_winwsProc != null && desiredSig == _lastDesyncSig) return;
     // Drop any running winws and WAIT for it to exit, so its exclusive WinDivert
     // handle is released before a replacement binds — otherwise a method swap
@@ -996,15 +1087,20 @@ class CoreController extends Notifier<CoreState> {
     if (old != null) {
       old.kill();
       var exited = true;
-      await old.exitCode.timeout(const Duration(seconds: 2), onTimeout: () {
-        exited = false;
-        return -1;
-      });
+      await old.exitCode.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () {
+          exited = false;
+          return -1;
+        },
+      );
       if (!exited) {
         // Old winws ignored the kill — proceeding could briefly overlap two
         // engines on the exclusive WinDivert handle (rare: kill() is
         // TerminateProcess on Windows, normally immediate). Log for diagnosis.
-        _log('desync: previous winws slow to exit — replacement may briefly overlap');
+        _log(
+          'desync: previous winws slow to exit — replacement may briefly overlap',
+        );
       }
     }
     if (!settings.winwsDesync) {
@@ -1017,13 +1113,17 @@ class CoreController extends Notifier<CoreState> {
     final exe = CorePaths.winws();
     if (!File(exe).existsSync()) {
       _lastDesyncSig = null; // not running → re-try on the next reconcile
-      _log('desync: winws.exe not installed — server-less DPI bypass unavailable');
+      _log(
+        'desync: winws.exe not installed — server-less DPI bypass unavailable',
+      );
       state = state.copyWith(desyncEngine: DesyncEngineStatus.missing);
       return;
     }
     if (!await NativeAdmin.isElevated()) {
       _lastDesyncSig = null; // re-try once elevated
-      _log('desync: WinDivert needs admin — relaunch elevated to enable bypass');
+      _log(
+        'desync: WinDivert needs admin — relaunch elevated to enable bypass',
+      );
       state = state.copyWith(desyncEngine: DesyncEngineStatus.needsAdmin);
       return;
     }
@@ -1041,8 +1141,9 @@ class CoreController extends Notifier<CoreState> {
       final quic = File(quicBin).existsSync() ? quicBin : null;
       final args = DesyncConfig.winwsArgs(
         hostlistPath: hostlistPath,
-        strategy: settings.desyncStrategy,
+        strategy: strat,
         quicPayloadPath: quic,
+        decoySni: decoy,
       );
       final p = await Process.start(exe, args, workingDirectory: dir);
       // The toggle may have been switched OFF during the spawn await → reap the
@@ -1059,26 +1160,32 @@ class CoreController extends Notifier<CoreState> {
       _winwsProc = p;
       _lastDesyncSig = desiredSig;
       _recordPid('winws.exe', p.pid);
-      _drainStdio(p, 'winws'); // chatty cygwin build — drain so the pipe can't block
+      _drainStdio(
+        p,
+        'winws',
+      ); // chatty cygwin build — drain so the pipe can't block
       // Observe a SELF-exit (driver conflict / AV kill / crash): flip the card off
       // "active" so the status never lies, AND self-heal by respawning if it should
       // still be running (capped per connect). Identity-guarded so a deliberate kill
       // (teardown / hot-swap, which nulls or replaces _winwsProc) is ignored.
-      unawaited(p.exitCode.then((_) {
-        if (!identical(_winwsProc, p)) return;
-        _winwsProc = null;
-        _lastDesyncSig = null;
-        if (state.desyncEngine == DesyncEngineStatus.active) {
-          state = state.copyWith(desyncEngine: DesyncEngineStatus.off);
-        }
-        _log('desync: winws exited unexpectedly');
-        // Self-heal if the toggle is still ON (tunnel-independent), capped.
-        if (ref.read(settingsProvider).winwsDesync && _desyncRespawns < 5) {
-          _desyncRespawns++;
-          _scheduleDesyncReapply(); // bring it back after a transient AV/driver kill
-        }
-      }));
-      _log('desync: winws engaged (${settings.desyncStrategy})');
+      unawaited(
+        p.exitCode.then((_) {
+          if (!identical(_winwsProc, p)) return;
+          _winwsProc = null;
+          _lastDesyncSig = null;
+          if (state.desyncEngine == DesyncEngineStatus.active) {
+            state = state.copyWith(desyncEngine: DesyncEngineStatus.off);
+          }
+          _log('desync: winws exited unexpectedly');
+          // Self-heal if the toggle is still ON (tunnel-independent), capped.
+          if (ref.read(settingsProvider).winwsDesync && _desyncRespawns < 5) {
+            _desyncRespawns++;
+            _scheduleDesyncReapply(); // bring it back after a transient AV/driver kill
+          }
+        }),
+      );
+      _log('desync: winws engaged ($strat'
+          '${decoy != null ? ', decoy $decoy' : ''})');
       state = state.copyWith(desyncEngine: DesyncEngineStatus.active);
       // A spawn that SURVIVES a while isn't a crash-loop → restore the self-heal
       // budget, so a later transient AV/driver kill can still recover even for a
@@ -1093,6 +1200,25 @@ class CoreController extends Notifier<CoreState> {
       _log('desync: winws failed to start: $e');
       state = state.copyWith(desyncEngine: DesyncEngineStatus.off);
     }
+  }
+
+  /// ② Advance the server-less desync to its NEXT preset + rotate the ④ decoy SNI,
+  /// then re-apply — for when the current preset isn't unblocking a site. The
+  /// reliable trigger is the diagnostic / a user tap (the user can SEE the page
+  /// didn't open), NOT a fragile always-on canary that could cycle off a working
+  /// preset. Returns false when every preset is exhausted (a genuine block the
+  /// desync can't fix), bounding the WinDivert churn to one pass through the presets.
+  bool desyncEscalate() {
+    final s = ref.read(settingsProvider);
+    if (!s.winwsDesync) return false;
+    _desyncTried.add(_desyncAutoStrategy ?? s.desyncStrategy);
+    final next = DesyncConfig.nextStrategy(_desyncTried);
+    if (next == null) return false; // exhausted — leave the user on their preset
+    _desyncAutoStrategy = next;
+    _desyncDecoyIdx++;
+    _log('desync: escalating to preset "$next" (current not unblocking the site)');
+    _scheduleDesyncReapply();
+    return true;
   }
 
   /// Drain a child process's stdout/stderr to the log so a full OS pipe buffer can
@@ -1115,8 +1241,10 @@ class CoreController extends Notifier<CoreState> {
   /// with or without a connection / profile.
   void _scheduleDesyncReapply() {
     _desyncReapplyDebounce?.cancel();
-    _desyncReapplyDebounce =
-        Timer(const Duration(milliseconds: 400), _spawnDesyncEngine);
+    _desyncReapplyDebounce = Timer(
+      const Duration(milliseconds: 400),
+      _spawnDesyncEngine,
+    );
   }
 
   /// Replace XHTTP outbounds with a `socks` outbound dialed by a per-outbound
@@ -1136,7 +1264,8 @@ class CoreController extends Notifier<CoreState> {
     final outs = (cfg['outbounds'] as List?) ?? const [];
     var port = 24100;
     final dead = <String>{}; // tags whose bridge we could NOT bring up
-    final reasons = <String>[]; // precise per-member reason, for the error detail
+    final reasons =
+        <String>[]; // precise per-member reason, for the error detail
     for (var i = 0; i < outs.length; i++) {
       final o = outs[i];
       if (o is! Map || !XrayConfig.needsXray(o)) continue;
@@ -1146,7 +1275,9 @@ class CoreController extends Notifier<CoreState> {
       // (a protocol it doesn't support) — can't leave `type: xhttp`, so drop it.
       if (xcfg == null) {
         if (tag != null) dead.add(tag);
-        reasons.add('${tag ?? '?'}: transport not supported by the xray bridge');
+        reasons.add(
+          '${tag ?? '?'}: transport not supported by the xray bridge',
+        );
         continue;
       }
       final path =
@@ -1171,8 +1302,10 @@ class CoreController extends Notifier<CoreState> {
       // exit survives, run the pruned pool (the cascade/selector hop past the dead
       // member), else flag a precise error so start() never launches a config that
       // routes everything direct or sits silent-dead.
-      _log('xray bridge: ${dead.length} member(s) failed — '
-          '${reasons.join('; ')}');
+      _log(
+        'xray bridge: ${dead.length} member(s) failed — '
+        '${reasons.join('; ')}',
+      );
       if (!SingBoxConfig.pruneDeadOutbounds(cfg, dead)) {
         _bridgeError = reasons.join('; ');
       }
@@ -1186,7 +1319,9 @@ class CoreController extends Notifier<CoreState> {
   /// can drop the member instead of pointing a socks outbound at a dead port —
   /// turning a silent-dead node into a clear, actionable error.
   Future<String?> _spawnXrayBridge(
-      String path, Map<String, dynamic> xcfg) async {
+    String path,
+    Map<String, dynamic> xcfg,
+  ) async {
     try {
       File(path).writeAsStringSync(XrayConfig.encode(xcfg));
     } catch (e) {
@@ -1210,14 +1345,17 @@ class CoreController extends Notifier<CoreState> {
       return 'xray could not validate the bridge config: $e';
     }
     try {
-      final p = await Process.start(
-        CorePaths.xray(),
-        ['run', '-c', path],
-        workingDirectory: CorePaths.runtimeDir().path,
-      );
+      final p = await Process.start(CorePaths.xray(), [
+        'run',
+        '-c',
+        path,
+      ], workingDirectory: CorePaths.runtimeDir().path);
       _xrayProcs.add(p);
       _recordPid('xray.exe', p.pid);
-      _drainStdio(p, 'xray'); // else a chatty bridge fills its pipe → silent-dead node
+      _drainStdio(
+        p,
+        'xray',
+      ); // else a chatty bridge fills its pipe → silent-dead node
       return null;
     } catch (e) {
       return 'xray bridge failed to start: $e';
@@ -1236,7 +1374,9 @@ class CoreController extends Notifier<CoreState> {
     }
     for (final line in const LineSplitter().convert(clean)) {
       final t = line.trim();
-      if (t.isNotEmpty && !t.startsWith('Xray ') && !t.startsWith('A unified')) {
+      if (t.isNotEmpty &&
+          !t.startsWith('Xray ') &&
+          !t.startsWith('A unified')) {
         return t;
       }
     }
@@ -1270,11 +1410,16 @@ class CoreController extends Notifier<CoreState> {
           '${CorePaths.runtimeDir().path}${Platform.pathSeparator}awg-$port.conf';
       try {
         File(path).writeAsStringSync(ini);
-        final p = await Process.start(CorePaths.awg(), ['-c', path],
-            workingDirectory: CorePaths.runtimeDir().path);
+        final p = await Process.start(CorePaths.awg(), [
+          '-c',
+          path,
+        ], workingDirectory: CorePaths.runtimeDir().path);
         _xrayProcs.add(p); // all bridge procs are reaped together
         _recordPid('awg.exe', p.pid);
-        _drainStdio(p, 'awg'); // drain so a chatty bridge can't block on a full pipe
+        _drainStdio(
+          p,
+          'awg',
+        ); // drain so a chatty bridge can't block on a full pipe
         // The endpoint now rides a plain socks proxy on 127.0.0.1:$port, so the
         // route `final`/rules that referenced its tag still resolve.
         outs.add({
@@ -1359,8 +1504,13 @@ class CoreController extends Notifier<CoreState> {
           try {
             // /FI "IMAGENAME eq ..." ensures we only kill if that PID is still one
             // of our cores (guards against PID reuse by an unrelated process).
-            await Process.run(_sys32('taskkill.exe'),
-                ['/F', '/PID', '$pid', '/FI', 'IMAGENAME eq $image']);
+            await Process.run(_sys32('taskkill.exe'), [
+              '/F',
+              '/PID',
+              '$pid',
+              '/FI',
+              'IMAGENAME eq $image',
+            ]);
           } catch (_) {}
         }
         _pidFile.deleteSync();
@@ -1383,8 +1533,13 @@ class CoreController extends Notifier<CoreState> {
     if (!Platform.isWindows) return;
     final keep = _winwsProc?.pid ?? 0; // 0 matches no process → reaps all winws
     try {
-      await Process.run(_sys32('taskkill.exe'),
-          ['/F', '/IM', 'winws.exe', '/FI', 'PID ne $keep']);
+      await Process.run(_sys32('taskkill.exe'), [
+        '/F',
+        '/IM',
+        'winws.exe',
+        '/FI',
+        'PID ne $keep',
+      ]);
     } catch (_) {}
   }
 
@@ -1565,7 +1720,8 @@ class CoreController extends Notifier<CoreState> {
     if (proc != null && !identical(_proc, proc)) return;
     _proc = null;
     _hop?.cancel();
-    _watchdog?.cancel(); // stop probing a dead core (re-armed by the next start())
+    _watchdog
+        ?.cancel(); // stop probing a dead core (re-armed by the next start())
     _netDebounce?.cancel();
     _killXray();
     // The fail-closed contract lives in the unit-tested [decideExit] — this just
@@ -1587,15 +1743,22 @@ class CoreController extends Notifier<CoreState> {
         // The swap owns the relaunch; the proxy stays at our port (fail CLOSED).
         return;
       case ExitOutcome.stopRestore:
-        await _finishExit(d, CoreStatus.stopped); // deliberate stop — keep any detail
+        await _finishExit(
+          d,
+          CoreStatus.stopped,
+        ); // deliberate stop — keep any detail
         return;
       case ExitOutcome.portInUse:
         // Not transient (another copy/orphan holds the port) — looping spams
         // FATALs. Stop, restore connectivity, tell the user.
         _portConflict = false;
         _autoReconnect = false;
-        await _finishExit(d, CoreStatus.error,
-            error: CoreError.portInUse, detail: null);
+        await _finishExit(
+          d,
+          CoreStatus.error,
+          error: CoreError.portInUse,
+          detail: null,
+        );
         return;
       case ExitOutcome.wireguardDead:
         // Plain-WG dial to an Amnezia/blocked endpoint never handshook — futile
@@ -1604,20 +1767,32 @@ class CoreController extends Notifier<CoreState> {
         _wgDead = false;
         _wgHandshakeFails = 0;
         _autoReconnect = false;
-        await _finishExit(d, CoreStatus.error,
-            error: CoreError.wireguardHandshake, detail: null);
+        await _finishExit(
+          d,
+          CoreStatus.error,
+          error: CoreError.wireguardHandshake,
+          detail: null,
+        );
         return;
       case ExitOutcome.gaveUp:
         _autoReconnect = false;
-        await _finishExit(d, CoreStatus.error,
-            error: CoreError.gaveUp, detail: null);
+        await _finishExit(
+          d,
+          CoreStatus.error,
+          error: CoreError.gaveUp,
+          detail: null,
+        );
         return;
       case ExitOutcome.gaveUpFenced:
         // Kill-switch ON: give up but STAY fail-CLOSED (fence + proxy kept). The
         // unblock button (status==error && fenceActive) lets the user disconnect.
         _autoReconnect = false;
-        await _finishExit(d, CoreStatus.error,
-            error: CoreError.gaveUp, detail: null);
+        await _finishExit(
+          d,
+          CoreStatus.error,
+          error: CoreError.gaveUp,
+          detail: null,
+        );
         return;
       case ExitOutcome.killSwitchFailed:
         // Fence couldn't install + the user wanted the kill-switch → we refused to
@@ -1625,8 +1800,12 @@ class CoreController extends Notifier<CoreState> {
         // error so they can fix it (run as admin / turn the kill-switch off).
         _fenceFailed = false;
         _autoReconnect = false;
-        await _finishExit(d, CoreStatus.error,
-            error: CoreError.killSwitchFailed, detail: null);
+        await _finishExit(
+          d,
+          CoreStatus.error,
+          error: CoreError.killSwitchFailed,
+          detail: null,
+        );
         return;
       case ExitOutcome.reconnect:
         // Unexpected death: fail CLOSED (proxy NOT restored, fence stays up) and
@@ -1654,8 +1833,12 @@ class CoreController extends Notifier<CoreState> {
   // pointer, optionally restore the user's real proxy + drop the fence (per the
   // [decideExit] flags), and clear the run markers. [error]/[detail] default to
   // "leave as-is" (a clean stop keeps them) — terminals pass explicit values.
-  Future<void> _finishExit(ExitDecision d, CoreStatus status,
-      {Object? error = _unset, Object? detail = _unset}) async {
+  Future<void> _finishExit(
+    ExitDecision d,
+    CoreStatus status, {
+    Object? error = _unset,
+    Object? detail = _unset,
+  }) async {
     // Only drop our proxy pointer when we actually restore the user's — a
     // fail-CLOSED give-up (gaveUpFenced) keeps the proxy at our dead local port
     // so proxy-aware apps stay blocked, not leaking direct. AWAIT the clear so a
@@ -1685,7 +1868,10 @@ class CoreController extends Notifier<CoreState> {
     if (!state.isOn) return;
     _netDebounce?.cancel();
     _netDebounce = Timer(const Duration(seconds: 3), () async {
-      if (!shouldActOnNetworkChange(isOn: state.isOn, restarting: _restarting)) {
+      if (!shouldActOnNetworkChange(
+        isOn: state.isOn,
+        restarting: _restarting,
+      )) {
         return;
       }
       // Don't tear a freshly-built tunnel down for its OWN setup churn (TUN
@@ -1715,13 +1901,19 @@ class CoreController extends Notifier<CoreState> {
   /// reconnect if it's silently dead. Runs regardless of the autoAdapt setting.
   Future<void> onResumed() async {
     if (!shouldProbeOnResume(
-        isOn: state.isOn, restarting: _restarting, adapting: _adapting)) {
+      isOn: state.isOn,
+      restarting: _restarting,
+      adapting: _adapting,
+    )) {
       return;
     }
     // Let the NIC/DHCP settle after wake before judging the path.
     await Future<void>.delayed(const Duration(seconds: 2));
     if (!shouldProbeOnResume(
-        isOn: state.isOn, restarting: _restarting, adapting: _adapting)) {
+      isOn: state.isOn,
+      restarting: _restarting,
+      adapting: _adapting,
+    )) {
       return;
     }
     final api = ref.read(clashApiProvider);
@@ -1802,7 +1994,8 @@ class CoreController extends Notifier<CoreState> {
   /// XHTTP→TUIC — trying each family once per dark episode. Returns true if it
   /// switched to a responding different-transport node; false (→ fall back to
   /// fingerprint escalation) when no untried family answers.
-  Future<bool> _tryTransportHop({bool freeze = false}) async {
+  Future<bool> _tryTransportHop(
+      {bool freeze = false, bool penaltyOnLeave = true}) async {
     final api = ref.read(clashApiProvider);
     final plan = planCascade(
       await api.proxies(),
@@ -1812,6 +2005,9 @@ class CoreController extends Notifier<CoreState> {
       // A freeze-driven hop prefers a freeze-IMMUNE transport (QUIC/XHTTP) within
       // the same survivability tier — don't land on another frozen Reality+Vision.
       freezeContext: freeze,
+      // Learned memory: within a tier, try the family that's been SURVIVING on this
+      // network first.
+      scores: _transportScores,
     );
     if (plan.selector == null) return false;
     if (plan.leafType != null) {
@@ -1831,6 +2027,15 @@ class CoreController extends Notifier<CoreState> {
       if (await api.delay(plan.probeFor(m)) == null) continue;
       answered++;
       if (await api.selectProxy(plan.selector!, m)) {
+        // LEARN: the family we hopped to answered (survived) → persisted, so next
+        // launch the survivor leads its tier.
+        _recordTransport(_familyByTag[plan.probeFor(m)], true);
+        // ...but only PENALISE the family we left on a GENUINE block/dark hop. A
+        // freeze hop (transport-agnostic 16KB volume rule) or a proactive-
+        // DEGRADATION hop (the leaf JUST answered — it's slow, not blocked) leaves a
+        // family that ISN'T proven dead, so don't teach the cascade to deprioritise
+        // it (e.g. demote Reality, the strongest ТСПУ survivor, for a latency spike).
+        if (penaltyOnLeave) _recordTransport(plan.leafType, false);
         _appLog(
           'transport-cascade: ${plan.selector} → $m '
           '(${plan.leafType ?? '?'} blocked → fresh family)',
@@ -1890,7 +2095,8 @@ class CoreController extends Notifier<CoreState> {
       _healthyStreak++;
       _clearWhitelistMode(); // real traffic flows ⇒ not in whitelist collapse
       _setTunnelDark(false);
-      if (!adapt) return; // detection done; remediation below is auto-adapt's job
+      if (!adapt)
+        return; // detection done; remediation below is auto-adapt's job
       // Clear the cascade's tried-set only on SUSTAINED recovery (#6) — the rule
       // lives in the unit-tested [watchdogShouldClearEpisode], not inline here.
       if (watchdogShouldClearEpisode(
@@ -1907,7 +2113,14 @@ class CoreController extends Notifier<CoreState> {
     }
     _healthFails++;
     _healthyStreak = 0; // a dark tick breaks the recovery streak
-    _setTunnelDark(true); // honest UI even with auto-adapt OFF
+    // Debounce the UI dark flag by ONE tick: a single jittery probe-pair fail on a
+    // flaky operator shouldn't flicker the headline green→amber→green on an
+    // otherwise-fine (idle) tunnel. Flip only after 2 consecutive dark ticks (~36s);
+    // the cascade/remediation below still waits for 3 (~54s). Active users never
+    // reach here — `trafficMoved` short-circuits above on real download bytes.
+    if (_healthFails >= 2) {
+      _setTunnelDark(true); // honest UI even with auto-adapt OFF
+    }
     if (_healthFails < 3) return; // ~54s of no traffic before acting
     _healthFails = 0;
     if (!adapt) {
@@ -2008,7 +2221,8 @@ class CoreController extends Notifier<CoreState> {
     if (ms > base * 3 && ms > 800) {
       if (++_degradeStreak >= 3) {
         // ~54 s of sustained severe degradation → move while there's still time.
-        if (await _tryTransportHop()) {
+        // penaltyOnLeave:false — the leaf is slow, not blocked; don't score it dead.
+        if (await _tryTransportHop(penaltyOnLeave: false)) {
           _appLog(
             'proactive: path degrading (${ms}ms vs ~${base.round()}ms '
             'baseline) → hopped transport early',
@@ -2056,7 +2270,7 @@ class CoreController extends Notifier<CoreState> {
       'auto-adapt: 16KB connection-freeze suspected (small probes pass, bulk '
       'transfer stalls) → hopping off the long TLS stream to XHTTP/QUIC',
     );
-    if (!await _tryTransportHop(freeze: true)) {
+    if (!await _tryTransportHop(freeze: true, penaltyOnLeave: false)) {
       _log(
         'auto-adapt: freeze suspected but no alternative transport in the pool '
         '— a single Vision node can\'t be freeze-fixed client-side; import an '
@@ -2072,7 +2286,9 @@ class CoreController extends Notifier<CoreState> {
   // + "arrived" threshold come from the ТСПУ-fact feed (②), defaulting baked.
   Future<bool> _bulkThroughOk() async {
     final facts = CensorshipFacts.active;
-    const stallWindow = Duration(seconds: 6); // no new bytes this long = stalled
+    const stallWindow = Duration(
+      seconds: 6,
+    ); // no new bytes this long = stalled
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 6)
       ..findProxy = (_) =>
@@ -2128,6 +2344,26 @@ class CoreController extends Notifier<CoreState> {
   }
 
   Future<bool> _tunnelHealthy() async {
+    // RETRY before declaring the tunnel dark: a single synthetic 204 routed through
+    // a CHURNING urltest (its parallel member-probe burst momentarily tripping a
+    // per-foreign-IP connection throttle) can time out for a beat while the path is
+    // actually fine. A genuinely dark tunnel fails BOTH tries; a flaky-probe-but-
+    // working one passes the second. This cuts the false "dark" verdicts that were
+    // restarting the core needlessly (dropping the local proxy → browser
+    // ERR_PROXY_CONNECTION_FAILED + the "constant reconnects"). A genuinely dark
+    // tunnel costs one extra probe per tick (~7s upstream timeout + 900ms ≈ 8s);
+    // worst-case _tunnelHealthy ≈ 15s still fits under the 18s watchdog interval,
+    // and the 3-dark-tick (~54s) gate before any restart is unchanged.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      if (await _probe204()) return true;
+      if (attempt == 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+      }
+    }
+    return false;
+  }
+
+  Future<bool> _probe204() async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 6)
       ..findProxy = (_) =>
@@ -2299,11 +2535,15 @@ final proxyGroupsProvider = StreamProvider<List<ProxyGroup>>((ref) async* {
     final all = await api.proxies();
     final memberDelays = {for (final p in all) p.name: p.delay};
     return all
-        .where((g) =>
-            g.all.length >= 2 && (g.type == 'Selector' || g.type == 'URLTest'))
+        .where(
+          (g) =>
+              g.all.length >= 2 &&
+              (g.type == 'Selector' || g.type == 'URLTest'),
+        )
         .map((g) => g.withMemberDelays(memberDelays))
         .toList();
   }
+
   yield await fetch();
   await for (final _ in Stream<void>.periodic(const Duration(seconds: 2))) {
     yield await fetch();
@@ -2318,18 +2558,24 @@ final latencyProvider = StreamProvider<int?>((ref) async* {
   // Watch only the slices that change WHICH proxy we measure — not the whole
   // profiles/settings objects (a sub-info refresh or an unrelated setting was
   // tearing down + rebuilding this polling stream).
-  final selectedTag =
-      ref.watch(profilesProvider.select((p) => p.selectedNode?.tag));
-  final selectedIsConfig = ref
-      .watch(profilesProvider.select((p) => p.selectedNode?.isConfig ?? false));
+  final selectedTag = ref.watch(
+    profilesProvider.select((p) => p.selectedNode?.tag),
+  );
+  final selectedIsConfig = ref.watch(
+    profilesProvider.select((p) => p.selectedNode?.isConfig ?? false),
+  );
   // Mirror start()'s autoPool predicate EXACTLY: the ⚡ Auto group is built only
   // from NON-insecure simple nodes (auto-failover never silently hops onto an
   // insecure node — H5). Counting raw simple nodes here would make us measure a
   // "⚡ Auto" group that start() never created when one of the two is insecure.
-  final autoPoolCount = ref.watch(profilesProvider
-      .select((p) => p.nodes.where((n) => !n.isConfig && !n.insecure).length));
-  final autoFailover =
-      ref.watch(settingsProvider.select((s) => s.autoFailover));
+  final autoPoolCount = ref.watch(
+    profilesProvider.select(
+      (p) => p.nodes.where((n) => !n.isConfig && !n.insecure).length,
+    ),
+  );
+  final autoFailover = ref.watch(
+    settingsProvider.select((s) => s.autoFailover),
+  );
   if (status != CoreStatus.running) {
     yield null;
     return;

@@ -315,7 +315,10 @@ class SingBoxConfig {
         'outbounds': prepared.map((n) => n.tag).toList(),
         'url': 'https://www.gstatic.com/generate_204',
         'interval': '90s', // react faster to a fresh ТСПУ block wave
-        'tolerance': 50,
+        'tolerance': 100, // hysteresis: don't re-pick on a tiny latency wobble
+        // Keep live connections (Telegram's long-lived MTProto socket) pinned to
+        // their member across a re-pick — only NEW connections move to the fastest.
+        'interrupt_exist_connections': false,
       },
       {
         // Manual picker: defaults to Auto, but the user can pin one server in
@@ -324,6 +327,11 @@ class SingBoxConfig {
         'tag': selectorTag,
         'outbounds': [autoTag, ...prepared.map((n) => n.tag)],
         'default': autoTag,
+        // The restart-free cascade hop re-PUTs THIS selector — pin the flag false
+        // (don't lean on sing-box's implicit default, per the stability directive)
+        // so a routine hop never cuts the live Telegram socket on the member it
+        // leaves.
+        'interrupt_exist_connections': false,
       },
     ];
     return mode == RouteMode.smart
@@ -658,9 +666,16 @@ class SingBoxConfig {
         // 1.13 requires interval <= idle_timeout; drop idle_timeout to be safe.
         // Tighten the probe interval for faster ТСПУ-block detection.
         if (o['type'] == 'urltest') {
-          o.remove('idle_timeout');
-          o['interval'] = '90s';
+          o.remove('idle_timeout'); // 1.13 requires interval <= idle_timeout
+          o['interval'] = '90s'; // tighter probe for faster block detection
         }
+        // FORCE off on BOTH selector AND urltest (the loop already skipped other
+        // types), whatever the imported config had. The restart-free cascade hop
+        // re-PUTs the SELECTOR, and a re-pick/hop with interrupt_exist_connections:
+        // true CUTS every live connection on the old member — Telegram's long-lived
+        // MTProto socket above all → constant reconnects on a flaky operator. With
+        // it false, only NEW connections move; the existing socket rides undisturbed.
+        o['interrupt_exist_connections'] = false;
         if ((o['outbounds'] as List?)?.isEmpty ?? false) {
           final tag = o['tag']?.toString();
           if (tag != null && dropped.add(tag)) changed = true;

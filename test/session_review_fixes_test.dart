@@ -364,4 +364,72 @@ PersistentKeepalive = -5
           reason: 'DNS must keep riding the tunnel, not leak DIRECT');
     });
   });
+
+  // urltest interrupt_exist_connections must be OFF so a latency re-pick doesn't
+  // cut live connections — Telegram's long-lived MTProto socket kept reconnecting.
+  group('urltest does not interrupt live connections', () {
+    Map urltestOf(Map<String, dynamic> cfg) =>
+        (cfg['outbounds'] as List).firstWhere((o) => o['type'] == 'urltest')
+            as Map;
+
+    test('fromConfig forces an imported urltest interrupt:true to false', () {
+      final cfg = SingBoxConfig.fromConfig({
+        'outbounds': [
+          {
+            'tag': 'auto',
+            'type': 'urltest',
+            'outbounds': ['n1', 'n2'],
+            'interrupt_exist_connections': true,
+            'interval': '5m',
+          },
+          {
+            'tag': 'n1',
+            'type': 'vless',
+            'server': '1.2.3.4',
+            'server_port': 443,
+            'uuid': 'u1',
+            'tls': {
+              'enabled': true,
+              'server_name': 's.com',
+              'reality': {'enabled': true, 'public_key': 'k'},
+            },
+          },
+          {
+            'tag': 'n2',
+            'type': 'vless',
+            'server': '5.6.7.8',
+            'server_port': 443,
+            'uuid': 'u2',
+            'tls': {
+              'enabled': true,
+              'server_name': 's.com',
+              'reality': {'enabled': true, 'public_key': 'k'},
+            },
+          },
+        ],
+        'route': {'final': 'auto'},
+      });
+      expect(urltestOf(cfg)['interrupt_exist_connections'], isFalse);
+    });
+
+    test('fromNodes auto-pool urltest sets interrupt:false', () {
+      final cfg = SingBoxConfig.fromNodes([
+        ParsedNode(tag: 'A', outbound: {
+          'type': 'vless',
+          'tag': 'A',
+          'server': '1.2.3.4',
+          'server_port': 443,
+          'uuid': 'u',
+        }),
+        ParsedNode(tag: 'B', outbound: {
+          'type': 'hysteria2',
+          'tag': 'B',
+          'server': '5.6.7.8',
+          'server_port': 443,
+          'password': 'p',
+        }),
+      ]);
+      expect(urltestOf(cfg)['interrupt_exist_connections'], isFalse);
+    });
+  });
 }

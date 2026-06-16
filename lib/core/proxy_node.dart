@@ -56,6 +56,30 @@ class ParsedNode {
     return false;
   }
 
+  /// True if a TLS block PINS the server certificate (a non-empty `certificate`),
+  /// so a self-signed / private-CA server is verified against THAT exact cert
+  /// instead of blindly trusted — the secure alternative to [insecure] that
+  /// sing-box honours (verified: hysteria2 + tuic accept an inline PEM with
+  /// `insecure:false`). A pinned node sets `insecure:false`, so it never trips the
+  /// [insecure] badge.
+  bool get pinned {
+    bool hasCert(Object? o) {
+      if (o is! Map) return false;
+      final tls = o['tls'];
+      if (tls is! Map) return false;
+      final c = tls['certificate'];
+      return (c is String && c.trim().isNotEmpty) || (c is List && c.isNotEmpty);
+    }
+
+    if (!isConfig) return hasCert(outbound);
+    for (final key in const ['outbounds', 'endpoints']) {
+      for (final o in (config?[key] as List?) ?? const []) {
+        if (hasCert(o)) return true;
+      }
+    }
+    return false;
+  }
+
   /// A STABLE per-server key for the insecure-MITM-consent memory — content-based,
   /// NOT the user-renameable / attacker-controlled display [tag]. A subscription
   /// that rotates the exit server behind the same name, or a re-import under a new

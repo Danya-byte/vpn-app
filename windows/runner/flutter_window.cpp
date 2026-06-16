@@ -204,11 +204,20 @@ std::wstring Utf16FromUtf8(const std::string& s) {
   return w;
 }
 
-// True if a proxy value points at our own loopback inbound — we must never back
-// THAT up as "the user's proxy", or a later restore strands them on a dead port.
+// True ONLY if a proxy value points at OUR OWN mixed-inbound endpoint
+// (127.0.0.1:2080 — must match SingBoxConfig.mixedListen:mixedPort). NOT any
+// loopback: a user's deliberate local proxy (cntlm / Px / Fiddler / Burp on a
+// DIFFERENT loopback port) and a real upstream in the per-protocol
+// "http=127.0.0.1:8080;https=realproxy:8080" form both legitimately mention
+// 127.0.0.1 — they MUST be backed up + restored, never mistaken for ours and
+// dropped. The :2080 port is the anchor that tells our own dead pointer (safe to
+// clear) apart from the user's live proxy (must be kept). Substring (find)
+// tolerates a scheme prefix ("http://127.0.0.1:2080"); the specific port makes a
+// collision with a real proxy vanishingly unlikely.
 bool IsOwnLoopback(const std::wstring& proxy) {
-  return proxy.rfind(L"127.0.0.1", 0) == 0 || proxy.rfind(L"localhost", 0) == 0 ||
-         proxy.rfind(L"[::1]", 0) == 0 || proxy.rfind(L"::1", 0) == 0;
+  return proxy.find(L"127.0.0.1:2080") != std::wstring::npos ||
+         proxy.find(L"localhost:2080") != std::wstring::npos ||
+         proxy.find(L"[::1]:2080") != std::wstring::npos;
 }
 
 void NotifyProxyChanged() {
@@ -327,9 +336,10 @@ void SetAutostart(bool on, bool minimized) {
 bool IsAutostartEnabled() { return !ReadString(kRunKey, L"vpn_app").empty(); }
 
 bool SetSystemProxy(const std::wstring& server) {
-  // Snapshot the user's proxy once — but never back up ANY loopback value (a
-  // dead 127.0.0.1:<port> left by a crash, even on a different port than the one
-  // we're setting now), or a later restore would point them at nothing.
+  // Snapshot the user's proxy once — but never back up OUR OWN value (a stale
+  // 127.0.0.1:2080 left by an unclean exit), or a later restore would point them
+  // back at our own dead port. A proxy the USER set — including a local one on a
+  // different port — IS backed up, so disconnect restores it faithfully.
   const std::wstring current = ReadString(kInetKey, L"ProxyServer");
   if (ReadDword(kBackupKey, L"BackupValid", 0) == 0 && current != server &&
       !IsOwnLoopback(current)) {
@@ -351,13 +361,26 @@ bool SetSystemProxy(const std::wstring& server) {
 }
 
 void RestoreSystemProxy() {
-  if (ReadDword(kBackupKey, L"BackupValid", 0) == 0) return;
-  WriteDword(kInetKey, L"ProxyEnable", ReadDword(kBackupKey, L"BackupEnable", 0));
-  WriteString(kInetKey, L"ProxyServer", ReadString(kBackupKey, L"BackupServer"));
-  WriteString(kInetKey, L"ProxyOverride",
-              ReadString(kBackupKey, L"BackupOverride"));
-  WriteDword(kBackupKey, L"BackupValid", 0);
-  NotifyProxyChanged();
+  if (ReadDword(kBackupKey, L"BackupValid", 0) == 1) {
+    WriteDword(kInetKey, L"ProxyEnable",
+               ReadDword(kBackupKey, L"BackupEnable", 0));
+    WriteString(kInetKey, L"ProxyServer", ReadString(kBackupKey, L"BackupServer"));
+    WriteString(kInetKey, L"ProxyOverride",
+                ReadString(kBackupKey, L"BackupOverride"));
+    WriteDword(kBackupKey, L"BackupValid", 0);
+    NotifyProxyChanged();
+    return;
+  }
+  // No real backup to restore. If the system proxy still points at OUR OWN dead
+  // 127.0.0.1:2080 (we set it on connect; nothing serves it now), DISABLE it so the
+  // browser falls back to DIRECT instead of erroring on a non-serving port
+  // (ERR_PROXY_CONNECTION_FAILED). The user's own proxy — a real upstream, or a
+  // local one on another port — is never ours, so it is left untouched.
+  if (ReadDword(kInetKey, L"ProxyEnable", 0) == 1 &&
+      IsOwnLoopback(ReadString(kInetKey, L"ProxyServer"))) {
+    WriteDword(kInetKey, L"ProxyEnable", 0);
+    NotifyProxyChanged();
+  }
 }
 
 // Grab the whole virtual screen into an in-memory 32bpp BMP (no encoder / extra
