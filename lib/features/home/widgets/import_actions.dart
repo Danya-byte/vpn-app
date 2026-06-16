@@ -771,8 +771,9 @@ bool _configRoutesDirect(Map cfg) {
   final outs = ((cfg['outbounds'] as List?) ?? const [])
       .whereType<Map>()
       .toList();
-  if (!outs.any((o) => proxyTypes.contains(o['type'])))
+  if (!outs.any((o) => proxyTypes.contains(o['type']))) {
     return true; // no proxy at all
+  }
   Map? byTag(String? t) {
     for (final o in outs) {
       if (o['tag']?.toString() == t) return o;
@@ -798,8 +799,9 @@ bool _configRoutesDirect(Map cfg) {
   }
 
   final route = cfg['route'];
-  if (route is! Map)
+  if (route is! Map) {
     return false; // no route block → first outbound (a proxy) wins
+  }
   // Effective final: explicit route.final, else sing-box uses the first outbound.
   final eff =
       leaf(route['final']?.toString()) ??
@@ -887,8 +889,9 @@ String? _soleUrl(String s) {
 // often UTF-16), falling back to UTF-8 then latin1 so nothing throws.
 String _decodeBytes(List<int> b) {
   if (b.length >= 2 && b[0] == 0xFF && b[1] == 0xFE) return _utf16(b, le: true);
-  if (b.length >= 2 && b[0] == 0xFE && b[1] == 0xFF)
+  if (b.length >= 2 && b[0] == 0xFE && b[1] == 0xFF) {
     return _utf16(b, le: false);
+  }
   try {
     return utf8.decode(b);
   } catch (_) {

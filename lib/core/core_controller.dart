@@ -2095,8 +2095,9 @@ class CoreController extends Notifier<CoreState> {
       _healthyStreak++;
       _clearWhitelistMode(); // real traffic flows ⇒ not in whitelist collapse
       _setTunnelDark(false);
-      if (!adapt)
+      if (!adapt) {
         return; // detection done; remediation below is auto-adapt's job
+      }
       // Clear the cascade's tried-set only on SUSTAINED recovery (#6) — the rule
       // lives in the unit-tested [watchdogShouldClearEpisode], not inline here.
       if (watchdogShouldClearEpisode(
