@@ -519,8 +519,22 @@ CascadePlan planCascade(
           final lb = scores[familyOf(b)] ?? 0.5;
           if ((la - lb).abs() > 0.05) return lb.compareTo(la);
         }
-        final da = _typeIsQuic(rawTypeOf(a)) != curQuic ? 0 : 1;
-        final db = _typeIsQuic(rawTypeOf(b)) != curQuic ? 0 : 1;
+        // L4 preference — DIRECTION depends on context. Under a 16KB FREEZE we
+        // want the OPPOSITE physical layer (a frozen TCP-TLS wave answered by
+        // QUIC/UDP, which the per-TCP byte counter can't policing). OUTSIDE a
+        // freeze, QUIC/UDP is the ТСПУ VOLUMETRICALLY-THROTTLED one (Hysteria2
+        // connects + passes a tiny 204 probe but resets real transfers), so a
+        // routine degrade/dark hop must prefer another TCP survivor (Reality/XHTTP)
+        // and treat QUIC as the LAST resort — not jump onto it for a latency blip.
+        final aQuic = _typeIsQuic(rawTypeOf(a));
+        final bQuic = _typeIsQuic(rawTypeOf(b));
+        if (freezeContext) {
+          final da = aQuic != curQuic ? 0 : 1;
+          final db = bQuic != curQuic ? 0 : 1;
+          return da.compareTo(db);
+        }
+        final da = aQuic ? 1 : 0; // non-freeze: TCP first, QUIC last
+        final db = bQuic ? 1 : 0;
         return da.compareTo(db);
       });
   // A pool candidate is PUT by group name but probed at its leaf node.

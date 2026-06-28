@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/profiles_controller.dart';
@@ -103,17 +102,6 @@ class _ServerGenSheetState extends State<_ServerGenSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Center(
-              child: Container(
-                width: 38,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 14),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
             Text(l.createOwnNode,
                 style:
                     const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
@@ -125,18 +113,11 @@ class _ServerGenSheetState extends State<_ServerGenSheet> {
             ),
             const SizedBox(height: 14),
             // Mode: a single node, or a 2-VPS domestic-relay chain.
-            SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<bool>(
-                showSelectedIcon: false,
-                segments: [
-                  ButtonSegment(value: false, label: Text(l.createOwnNode)),
-                  ButtonSegment(
-                      value: true, label: Text(l.serverGenChainToggle)),
-                ],
-                selected: {_chain},
-                onSelectionChanged: (s) => setState(() => _chain = s.first),
-              ),
+            GlassSegmented<bool>(
+              value: _chain,
+              segments: const [false, true],
+              labelOf: (v) => v ? l.serverGenChainToggle : l.createOwnNode,
+              onChanged: (v) => setState(() => _chain = v),
             ),
             if (_chain) ...[
               const SizedBox(height: 8),
@@ -167,11 +148,12 @@ class _ServerGenSheetState extends State<_ServerGenSheet> {
             _sniDropdown(context, _sni, ServerGen.stealSnis,
                 (v) => setState(() => _sni = v)),
             const SizedBox(height: 12),
-            GlassButton(
-              onPressed: _busy ? null : _generate,
-              child: Center(
-                child: _busy
-                    ? Row(
+            Align(
+              alignment: Alignment.centerLeft,
+              child: _busy
+                  ? GlassButton(
+                      onPressed: null,
+                      child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           SizedBox(
@@ -183,24 +165,32 @@ class _ServerGenSheetState extends State<_ServerGenSheet> {
                           const SizedBox(width: 10),
                           Text(l.generating),
                         ],
-                      )
-                    : Text(l.generate),
-              ),
+                      ),
+                    )
+                  : TgButton(label: l.generate, onPressed: _generate),
             ),
             if (!_chain && b != null) ...[
               const SizedBox(height: 16),
               _output(context, l.serverGenStep1, b.setupScript),
               const SizedBox(height: 12),
-              GlassButton(
-                onPressed: () {
-                  final toast = AppToast.of(context);
-                  widget.ref
-                      .read(profilesProvider.notifier)
-                      .importText(b.allLinks, selectFirst: true);
-                  Navigator.pop(context);
-                  toast.message(l.serverGenAdded);
-                },
-                child: Center(child: Text(l.serverGenStep2)),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TgButton(
+                  label: l.serverGenStep2,
+                  onPressed: () {
+                    final toast = AppToast.of(context);
+                    final r = widget.ref
+                        .read(profilesProvider.notifier)
+                        .importText(b.allLinks, selectFirst: true);
+                    // The flagship flow must not claim success on 0 added.
+                    if (r.added == 0) {
+                      toast.message(l.msgNotRecognized, kind: ToastKind.error);
+                      return;
+                    }
+                    Navigator.pop(context);
+                    toast.message(l.serverGenAdded);
+                  },
+                ),
               ),
             ],
             if (_chain && _chainBundle != null) ...[
@@ -211,17 +201,25 @@ class _ServerGenSheetState extends State<_ServerGenSheet> {
               _output(
                   context, l.serverGenExitScript, _chainBundle!.exitSetupScript),
               const SizedBox(height: 12),
-              GlassButton(
-                onPressed: () {
-                  final toast = AppToast.of(context);
-                  widget.ref
-                      .read(profilesProvider.notifier)
-                      .importText(_chainBundle!.clientConfigJson,
-                          selectFirst: true);
-                  Navigator.pop(context);
-                  toast.message(l.serverGenChainAdded);
-                },
-                child: Center(child: Text(l.serverGenStep2)),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TgButton(
+                  label: l.serverGenStep2,
+                  onPressed: () {
+                    final toast = AppToast.of(context);
+                    final r = widget.ref
+                        .read(profilesProvider.notifier)
+                        .importText(_chainBundle!.clientConfigJson,
+                            selectFirst: true);
+                    // The flagship flow must not claim success on 0 added.
+                    if (r.added == 0) {
+                      toast.message(l.msgNotRecognized, kind: ToastKind.error);
+                      return;
+                    }
+                    Navigator.pop(context);
+                    toast.message(l.serverGenChainAdded);
+                  },
+                ),
               ),
             ],
           ],
@@ -242,7 +240,7 @@ class _ServerGenSheetState extends State<_ServerGenSheet> {
   }
 
   Widget _output(BuildContext context, String title, String content) {
-    final scheme = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -252,10 +250,10 @@ class _ServerGenSheetState extends State<_ServerGenSheet> {
                 child: Text(title,
                     style: const TextStyle(
                         fontWeight: FontWeight.w600, fontSize: 13))),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              icon: Icon(Icons.copy_rounded, size: 18, color: scheme.primary),
-              onPressed: () => Clipboard.setData(ClipboardData(text: content)),
+            Tooltip(
+              message: l.copy,
+              child: GlassCopyButton(
+                  text: content, padding: const EdgeInsets.all(6)),
             ),
           ],
         ),

@@ -122,6 +122,15 @@ void main() {
     });
   });
 
+  group('DesyncConfig.winwsArgs — SNI-only output (no Telegram profile)', () {
+    test('default capture window is 80,443 with no STUN/ipset', () {
+      final plain = DesyncConfig.winwsArgs(hostlistPath: '/t/hl');
+      expect(plain, contains('--wf-tcp=80,443'));
+      expect(plain, isNot(contains('--filter-l7=stun')));
+      expect(plain.any((x) => x.startsWith('--ipset=')), isFalse);
+    });
+  });
+
   group('DesyncConfig.isValidStrategy', () {
     test('known + unknown', () {
       expect(DesyncConfig.isValidStrategy('fake_split'), isTrue);

@@ -21,6 +21,22 @@ class AppLocalizationsRu extends AppLocalizations {
   String get navSettings => 'Настройки';
 
   @override
+  String get trayConnect => 'Подключить';
+
+  @override
+  String get trayInsecureHint =>
+      'Сервер без проверки сертификата — подтвердите его в приложении один раз.';
+
+  @override
+  String get trayDisconnect => 'Отключить';
+
+  @override
+  String get trayShow => 'Показать';
+
+  @override
+  String get trayQuit => 'Выход';
+
+  @override
   String get tabConnections => 'Соединения';
 
   @override
@@ -55,6 +71,10 @@ class AppLocalizationsRu extends AppLocalizations {
       'Пока нет серверов. Вставь ссылку, отсканируй QR или открой файл.';
 
   @override
+  String get adminDropHint =>
+      'Админ-режим: перетащи конфиг / ссылку в окно — подсветки при наведении нет, но импорт сработает.';
+
+  @override
   String get clipboardOfferText => 'В буфере обмена — ссылка на сервер';
 
   @override
@@ -79,6 +99,12 @@ class AppLocalizationsRu extends AppLocalizations {
   String get renameAction => 'Переименовать';
 
   @override
+  String get deleteAction => 'Удалить';
+
+  @override
+  String get moreActions => 'Ещё';
+
+  @override
   String get renameInvalid => 'Имя пустое или уже занято';
 
   @override
@@ -91,6 +117,16 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get hardNetworkCtaDone =>
       'Режим жёсткой сети включён — переподключаюсь';
+
+  @override
+  String get hardNetworkCtaAlready => 'Режим жёсткой сети уже включён';
+
+  @override
+  String get hardNetworkCtaFailed =>
+      'Не удалось переподключиться — попробуйте выключить и включить снова';
+
+  @override
+  String get updateOpenFailed => 'Не удалось открыть страницу загрузки';
 
   @override
   String get noProfile => 'Нет профиля';
@@ -250,6 +286,9 @@ class AppLocalizationsRu extends AppLocalizations {
       'Дробит TLS-рукопожатие против DPI по SNI. Чуть медленнее.';
 
   @override
+  String get antiDpiForcedHint => 'Включено режимом жёсткой сети';
+
+  @override
   String get maxResistTitle => 'Режим жёсткой сети (моб. оператор)';
 
   @override
@@ -261,7 +300,75 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get desyncDesc =>
-      'Открывает тротлящиеся сайты (YouTube, Discord, Rutracker) без сервера. Нужны права администратора. Не помогает при IP-блоке (Telegram) — там нужен сервер.';
+      'Открывает тротлящиеся / SNI-DPI сайты (YouTube, Discord, Rutracker) прямо на устройстве, без сервера — десинхронизирует TLS-хендшейк, чтобы ТСПУ не прочитал имя сайта. Нужны права администратора (грузит сетевой драйвер). Не пробивает полный IP-блок — там нужен сервер.';
+
+  @override
+  String get tgUnblockTitle => 'Telegram без сервера';
+
+  @override
+  String get tgUnblockDesc =>
+      'Возвращает ЗВОНКИ Telegram (заблокированы с авг 2025 по сигнатуре пакета) и стабилизирует сообщения — на устройстве, без сервера. Бьёт по адресам серверов Telegram и обманывает фильтр сигнатуры. Нужны права администратора. Медиа останется медленным, а южные регионы / полные шатдауны требуют сервера — там IP-блок, а не сигнатура.';
+
+  @override
+  String get tgWsTitle => 'Telegram без сервера (опытное)';
+
+  @override
+  String get tgWsDesc =>
+      'Опытное, без сервера и без админа: переупаковывает трафик Telegram в HTTPS-соединение к web.telegram.org, мимо сигнатурного троттлинга. Сессию может пока не нести — проверь, прежде чем полагаться; жёсткий IP-блок это не обходит. Звонки сюда не входят (для них тумблер выше).';
+
+  @override
+  String get tgWsHowto =>
+      'В Telegram → Настройки → Продвинутые → Соединение → SOCKS5 укажи сюда, затем выключи VPN.';
+
+  @override
+  String get tgWsPathOk =>
+      'web.telegram.org доступен (попробуй отправить сообщение)';
+
+  @override
+  String get tgWsPathFail =>
+      'web.telegram.org недоступен — оператор рубит и его (нужен сервер)';
+
+  @override
+  String get tgWsBlockedHint =>
+      'Оператор блокирует web.telegram.org по IP — serverless-обхода для медиа тут нет. Свой чистый выходной IP проводит Telegram (и медиа) в обход блока.';
+
+  @override
+  String get tgWsMakeServer => 'Создать свой сервер для Telegram';
+
+  @override
+  String get tgNativeTitle => 'Telegram без сервера (нативно)';
+
+  @override
+  String get tgNativeDesc =>
+      'Локальный движок (tgcore): заворачивает Telegram в WebSocket к незаторможенному веб-шлюзу, маскируясь под твой настоящий браузер. Без сервера. Базовый мост — без админа; звонки требуют прав.';
+
+  @override
+  String get tgNativeOpenInTg => 'Открыть в Telegram';
+
+  @override
+  String get tgNativeRunning => 'Запущен — открой ссылку в Telegram';
+
+  @override
+  String get tgNativeCapturing => 'Снимаю отпечаток браузера…';
+
+  @override
+  String get tgNativeUnavailable =>
+      'Движок недоступен — нет бинарника или он остановлен.';
+
+  @override
+  String get tgNativeCalls => 'Звонки (десинк, нужен админ)';
+
+  @override
+  String get tgNativeSetupFp => 'Настроить под мой браузер';
+
+  @override
+  String get tgWsChecking => 'Проверяю путь…';
+
+  @override
+  String get tgWsRecheck => 'Проверить путь заново';
+
+  @override
+  String get tgWsConns => 'активно';
 
   @override
   String get desyncActive => 'Обход DPI активен';
@@ -275,7 +382,7 @@ class AppLocalizationsRu extends AppLocalizations {
       'Движок не установлен — положи winws.exe + WinDivert в core\\windows.';
 
   @override
-  String get desyncIdle => 'Включится при подключении.';
+  String get desyncIdle => 'Включается сразу, без подключения.';
 
   @override
   String get desyncTryNext => 'Следующий метод';
@@ -417,6 +524,10 @@ class AppLocalizationsRu extends AppLocalizations {
   String get noConnections => 'Нет активных соединений';
 
   @override
+  String get connectionsConnect =>
+      'Подключите VPN, чтобы видеть активные соединения.';
+
+  @override
   String connectionsActive(int count) {
     return 'активно: $count';
   }
@@ -507,7 +618,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get importConfigProfile => 'конфиг sing-box';
 
   @override
-  String get importExit => 'Маршрут по умолчанию';
+  String get importExit => 'Маршрут';
 
   @override
   String get importRoutesDirect =>
@@ -931,7 +1042,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get echDesc =>
-      'Скрывает TLS-имя сервера на не-Reality узлах. Нужна поддержка ECH на сервере — выключи, если узел не подключается.';
+      'Сам находит опубликованный в DNS ECH-конфиг узла и прячет реальное TLS-имя сервера за прикрывающим — как Chrome. Лучше всего для узлов за Cloudflare; безвредно, если ECH нет.';
 
   @override
   String get ecsTitle => 'Подсеть клиента в DNS (ECS)';

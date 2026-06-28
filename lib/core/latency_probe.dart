@@ -106,12 +106,16 @@ Future<int?> tcpPing(
   String host,
   int port, {
   Duration timeout = const Duration(seconds: 7),
+  bool Function()? abort,
 }) async {
   // Best-of-2: a single cold-SYN loss on a jittery RF-mobile uplink must NOT paint a
   // working Reality/VLESS server red "blocked". The retry uses a shorter budget (the
   // first attempt already established the path is reachable-but-slow). A genuinely
   // dead/blocked server fails BOTH → null → red.
   for (var attempt = 0; attempt < 2; attempt++) {
+    // Don't fire the RETRY if the tunnel came up during the first attempt — a raw
+    // SYN now would leak the real IP around a system-proxy tunnel.
+    if (attempt > 0 && (abort?.call() ?? false)) break;
     final ms = await _connectOnce(
         host, port, attempt == 0 ? timeout : const Duration(seconds: 4));
     if (ms != null) return ms;
@@ -206,11 +210,15 @@ class LatencyProbe extends Notifier<LatencyState> {
         int? best;
         var anyTcp = false; // at least one non-UDP exit exists
         var anyResolved = false; // ...and at least one got an IP to dial
+        var aborted = false; // the tunnel came up mid-probe → stop, don't judge
         for (final ep in eps) {
           // UDP can't be TCP-probed (handled by the chip's "UDP" label).
           if (ep.udp) continue;
           anyTcp = true;
-          if (abort?.call() ?? false) break;
+          if (abort?.call() ?? false) {
+            aborted = true;
+            break;
+          }
           String? ip;
           if (InternetAddress.tryParse(ep.host) != null) {
             ip = ep.host; // already a literal
@@ -219,11 +227,31 @@ class LatencyProbe extends Notifier<LatencyState> {
             if (ips.isNotEmpty) ip = ips.first;
           }
           if (ip != null) {
+            // Re-check abort AFTER the DoH await — the tunnel may have come up
+            // during resolution, and a raw SYN now would leak the real IP.
+            if (abort?.call() ?? false) {
+              aborted = true;
+              break;
+            }
             anyResolved = true;
-            final ms = await tcpPing(ip, ep.port);
+            final ms = await tcpPing(ip, ep.port, abort: abort);
+            // tcpPing returns null on its OWN internal abort (the tunnel came up
+            // mid-SYN). Reflect that into `aborted` so the drop-guard below fires
+            // instead of writing a false-red {tag:null} for a working server.
+            if (ms == null && (abort?.call() ?? false)) {
+              aborted = true;
+              break;
+            }
             final b = best;
             if (ms != null && (b == null || ms < b)) best = ms;
           }
+        }
+        // Aborted (the tunnel came up) before ANY measurement → do NOT write a
+        // null result: that paints a working, just-unprobed server red/blocked.
+        // Drop it from `measuring` and leave its prior chip state untouched.
+        if (aborted && best == null) {
+          state = state.copyWith(measuring: {...state.measuring}..remove(tag));
+          continue;
         }
         // Unverified only if there WERE TCP exits but DoH resolved NONE of them (a
         // poisonable result we won't trust). All-UDP → not unverified ("UDP" via the

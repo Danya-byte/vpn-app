@@ -165,13 +165,24 @@ class Diagnostics {
     if (!tcp.ok) {
       verdict = tcp.timedOut ? BlockVerdict.timeout : BlockVerdict.tcpReset;
     } else {
+      // Do NOT blanket-accept the cert: a TLS-MITM blockpage (the operator
+      // terminates TLS with its own cert) is the STRONGEST DPI signal — accepting
+      // any cert made it read as a clean handshake. We keep the connection alive
+      // through onBadCertificate (so a slow/odd cert doesn't itself read as a
+      // reset) but RECORD whether it validated, then treat an invalid/mismatched
+      // peer cert as interception → tlsDpi, same as a killed handshake.
+      var certTrusted = true;
       final tls = await _time(() => SecureSocket.connect(host, 443,
               timeout: const Duration(seconds: 4),
-              onBadCertificate: (_) => true)
+              onBadCertificate: (_) {
+                certTrusted = false; // cert doesn't chain/match host → MITM
+                return true;
+              })
           .then((s) => s.destroy()));
       tlsMs = tls.ms;
-      // TCP ok but TLS handshake killed = classic SNI-based DPI.
-      verdict = tls.ok
+      // TCP ok but TLS handshake killed = classic SNI-based DPI; TLS completed but
+      // the peer cert is forged/mismatched = a TLS-MITM blockpage — both are DPI.
+      verdict = (tls.ok && certTrusted)
           ? (dnsPoisoned ? BlockVerdict.dnsPoisoned : BlockVerdict.ok)
           : BlockVerdict.tlsDpi;
     }
@@ -260,17 +271,20 @@ class Diagnostics {
   /// latency probe so it never trusts the operator's poisonable system resolver.
   static Future<Set<String>> doh(String host) => _doh(host);
 
-  // DoH resolvers tried IN ORDER (RFC 8484 JSON API). All are IP-LITERAL — a
+  // DoH resolvers tried IN ORDER (the dns-JSON API). All are IP-LITERAL — a
   // hostname resolver (dns.google) would need DNS to bootstrap, the very thing
   // that's blocked — and each provider's cert carries that IP as a SAN, so TLS
   // still verifies. 1.1.1.1 is the most-blocked in RF, so the cascade falls
-  // through to Google / Quad9 / the secondaries until one answers.
+  // through to Google / the secondaries until one answers.
+  // NOTE: only Cloudflare + Google serve the dns-JSON API on IP literals — Quad9
+  // (the old :5053 entries) is RFC-8484 wireformat ONLY and returned no JSON, so
+  // it was a dead cascade step; dropped. Multiple IPs per provider keep some
+  // redundancy. (Adding a non-big-tech step would need wireformat parsing.)
   static const _dohEndpoints = [
-    'https://1.1.1.1/dns-query',
-    'https://8.8.8.8/resolve',
-    'https://9.9.9.9:5053/dns-query',
-    'https://1.0.0.1/dns-query',
-    'https://149.112.112.112:5053/dns-query',
+    'https://1.1.1.1/dns-query', // Cloudflare
+    'https://8.8.8.8/resolve', // Google
+    'https://8.8.4.4/resolve', // Google secondary
+    'https://1.0.0.1/dns-query', // Cloudflare secondary
   ];
 
   static Future<Set<String>> _doh(String host) async {
@@ -315,8 +329,11 @@ class Diagnostics {
     }
   }
 
-  // Reachable through the local proxy (HTTP CONNECT tunnels HTTPS). Any HTTP
-  // status back = the VPN carried the request.
+  // Reachable through the local proxy (HTTP CONNECT tunnels HTTPS). ANY HTTP
+  // status — 2xx/3xx/4xx AND 5xx — means the tunnel DELIVERED the request to the
+  // real host, which is the "VPN reaches a blocked site" headline. A genuine
+  // block is a connect failure / timeout / RST, which throws and is caught below
+  // as false. (followRedirects is off so a 3xx is the server's own answer.)
   static Future<bool> _reachableViaTunnel(String host) async {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 6);
@@ -327,7 +344,15 @@ class Diagnostics {
       final req = await client.getUrl(Uri.parse('https://$host/'));
       req.followRedirects = false;
       final resp = await req.close().timeout(const Duration(seconds: 8));
-      return resp.statusCode > 0;
+      final code = resp.statusCode;
+      // ANY HTTP response means the tunnel DELIVERED the request to the real host
+      // — that's "reachable". The RKN control hosts this probes (x.com / discord
+      // / instagram) answer 401/403/404, and an upstream/CDN edge can answer
+      // 502/503, through a fully-working tunnel; gating on 2xx/3xx (or excluding
+      // 5xx) made the "VPN demonstrably reaches a blocked site" headline vanish
+      // for the exact sites it exists to show. A genuine block is a connect
+      // failure/timeout/RST → caught below → false.
+      return code >= 200 && code < 600;
     } catch (_) {
       return false;
     } finally {
@@ -476,13 +501,25 @@ class Diagnostics {
   /// Is ANY foreign control IP reachable by a raw dial (whitelist gate), and is
   /// the local network even up? Runs once, shared across the per-server probes.
   static Future<({bool foreign, bool localUp})> probeNetwork() async {
-    Future<bool> tcp(String h, int p) async {
+    // Returns (ok, timedOut): a timeout means "no answer in budget" (slow link),
+    // which is NOT proof the host/network is down — distinguish it from an active
+    // refusal/reset so a slow uplink doesn't fabricate a false OFFLINE verdict.
+    Future<({bool ok, bool timedOut})> tcp(String h, int p) async {
+      // Socket.connect's OWN timeout throws a SocketException, NOT a
+      // TimeoutException — so the redundant outer `.timeout(4s)` only produced a
+      // TimeoutException when it won a coin-flip race against the inner timer,
+      // and a real connect-timeout usually fell into catch(_) misclassified as a
+      // reset (timedOut:false). Classify by elapsed instead, like _time below.
+      final sw = Stopwatch()..start();
       try {
-        final s = await Socket.connect(h, p, timeout: const Duration(seconds: 4));
+        final s =
+            await Socket.connect(h, p, timeout: const Duration(seconds: 4));
         s.destroy();
-        return true;
+        return (ok: true, timedOut: false);
+      } on TimeoutException {
+        return (ok: false, timedOut: true);
       } catch (_) {
-        return false;
+        return (ok: false, timedOut: sw.elapsedMilliseconds >= 3800);
       }
     }
 
@@ -492,14 +529,18 @@ class Diagnostics {
     // reachable even under a state IP-allowlist, so any hit = the link is up.
     const ruHosts = ['ya.ru', 'vk.com', 'mail.ru', 'gosuslugi.ru'];
     final localResults = await Future.wait([for (final h in ruHosts) tcp(h, 443)]);
-    final localUp = localResults.any((r) => r);
-    var foreign = false;
-    for (final ip in SingBoxConfig.foreignProbeIps) {
-      if (await tcp(ip, 443)) {
-        foreign = true;
-        break;
-      }
-    }
+    // The link is up if any host answered. But if NONE answered yet EVERY failure
+    // was a TIMEOUT (no active reset/refusal at all), that's a slow link, not a
+    // downed adapter — default localUp=true so a sluggish probe never fabricates a
+    // scary OFFLINE / false whitelist-collapse verdict.
+    final localUp = localResults.any((r) => r.ok) ||
+        localResults.every((r) => r.timedOut);
+    // Foreign probes run CONCURRENTLY, not one-after-another: the old sequential
+    // loop spent up to len×4s (~12s) waiting on dead IPs in series before giving
+    // up. any() resolves as soon as the first IP answers.
+    final foreignResults = await Future.wait(
+        [for (final ip in SingBoxConfig.foreignProbeIps) tcp(ip, 443)]);
+    final foreign = foreignResults.any((r) => r.ok);
     return (foreign: foreign, localUp: localUp);
   }
 

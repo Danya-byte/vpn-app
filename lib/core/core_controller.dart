@@ -14,6 +14,7 @@ import 'censorship_facts_feed.dart';
 import 'clash_api.dart';
 import 'core_paths.dart';
 import 'desync_config.dart';
+import 'ech_discovery.dart';
 import 'lifecycle.dart';
 import 'native_admin.dart';
 import 'profiles_controller.dart';
@@ -405,7 +406,12 @@ class CoreController extends Notifier<CoreState> {
     // The winws desync toggle persists across launches — bring the sidecar up on
     // start if it's enabled (and we're elevated), so a server-less user gets the
     // bypass immediately without any Connect.
-    if (ref.read(settingsProvider).winwsDesync) _scheduleDesyncReapply();
+    // Guard against tests arming a real winws spawn from the persisted store
+    // (same FLUTTER_TEST gate the resume block below uses).
+    if (!Platform.environment.containsKey('FLUTTER_TEST') &&
+        ref.read(settingsProvider).winwsDesync) {
+      _scheduleDesyncReapply();
+    }
     ref.onDispose(() {
       _proc?.kill();
       _killXray();
@@ -739,6 +745,13 @@ class CoreController extends Notifier<CoreState> {
     );
     // EDNS Client Subnet (one choke point; no-op unless the user set a subnet).
     cfg = SingBoxConfig.applyEcs(cfg);
+    // Native ECH masquerade (opt-in lever): discover each plain-TLS exit's
+    // published ECH config over DoH and bake it in, so the real SNI rides
+    // encrypted and only the cover public_name shows on the wire — what Chrome
+    // does, on our core, no bespoke binary. Best-effort + fail-safe (a miss
+    // leaves sing-box's own ECH resolution). BEFORE the xray bridge rewrites
+    // XHTTP outbounds into `socks` (which would drop the tls block).
+    if (settings.ech) _applyEchDiscovery(cfg); // applies from cache; warms in bg
     // Snapshot the TRUE per-outbound families for the cascade BEFORE the xray
     // bridge rewrites XHTTP outbounds into `socks` (which would otherwise erase
     // the XHTTP↔Reality distinction). See [familiesFromConfig].
@@ -905,13 +918,17 @@ class CoreController extends Notifier<CoreState> {
         );
         return;
       }
-    } else if (_proxyActive) {
-      // Live proxy→TUN switch (restart() now makes this a routine path): TUN
-      // captures everything, so the system proxy must be CLEARED — else the
-      // registry keeps pointing proxy-aware apps at the now-dead local port
-      // (127.0.0.1:2080) and they fail to connect. Restores the user's original
-      // proxy + resets _proxyActive.
-      await _restoreProxy();
+    } else {
+      // Entering TUN: TUN captures every app transparently, so SUSPEND any system
+      // proxy. clearForTun handles BOTH cases: our own 127.0.0.1:2080 from a prior
+      // proxy-mode session (a live proxy→TUN switch — _proxyActive was true), AND
+      // a leftover loopback proxy from ANOTHER local VPN on a FRESH TUN start —
+      // e.g. Hiddify on 127.0.0.1:12334, which otherwise hijacks proxy-aware apps
+      // (Chrome / Edge / Electron — the Claude desktop app) into a broken double-
+      // hop or a dead port. The user's own proxy is backed up and restored
+      // (liveness-checked) on disconnect. No-op when no proxy is set.
+      _proxyActive = false;
+      await SystemProxy.clearForTun();
     }
 
     // Re-check intent AFTER the proxy-set await: a user Stop — or an unexpected
@@ -1068,7 +1085,8 @@ class CoreController extends Notifier<CoreState> {
     final decoy = _desyncAutoStrategy != null
         ? decoySnis[_desyncDecoyIdx % decoySnis.length]
         : null;
-    final hostlist = settings.winwsDesync
+    final sniOn = settings.winwsDesync;
+    final hostlist = sniOn
         ? DesyncConfig.hostlistContent([
             ...DesyncConfig.defaultHosts,
             ...SingBoxConfig.desyncDomains,
@@ -1077,7 +1095,7 @@ class CoreController extends Notifier<CoreState> {
     // Signature of the desired live state. If winws is already up with this exact
     // config, there's nothing to do — skip the kill+respawn churn.
     final desiredSig =
-        settings.winwsDesync ? '$strat${decoy ?? ''}$hostlist' : 'off';
+        sniOn ? 'sni=$sniOn|$strat${decoy ?? ''}$hostlist' : 'off';
     if (_winwsProc != null && desiredSig == _lastDesyncSig) return;
     // Drop any running winws and WAIT for it to exit, so its exclusive WinDivert
     // handle is released before a replacement binds — otherwise a method swap
@@ -1103,7 +1121,7 @@ class CoreController extends Notifier<CoreState> {
         );
       }
     }
-    if (!settings.winwsDesync) {
+    if (!sniOn) {
       _lastDesyncSig = 'off';
       if (state.desyncEngine != DesyncEngineStatus.off) {
         state = state.copyWith(desyncEngine: DesyncEngineStatus.off);
@@ -1133,23 +1151,25 @@ class CoreController extends Notifier<CoreState> {
       // Old winws has already fully exited (awaited above), so this write can't
       // race a reader.
       File(hostlistPath).writeAsStringSync(hostlist);
-      // fake-QUIC Initial decoy ships beside winws.exe (fetched together). Present
-      // → enable the UDP/443 (HTTP-3) desync block so QUIC-first browsers (YouTube)
-      // are covered; absent → TCP-only (no payload-less UDP fake that could break HTTP/3).
-      final quicBin =
-          '${File(exe).parent.path}${Platform.pathSeparator}quic_initial.bin';
+      // fake-QUIC decoy ships beside winws.exe (fetched together). Present → use as
+      // the fake payload (QUIC/443 HTTP-3 block); absent → no payload-less QUIC fake
+      // that could break HTTP-3, so the SNI/QUIC block stays gated on the .bin.
+      final coreDir = File(exe).parent.path;
+      final quicBin = '$coreDir${Platform.pathSeparator}quic_initial.bin';
       final quic = File(quicBin).existsSync() ? quicBin : null;
       final args = DesyncConfig.winwsArgs(
         hostlistPath: hostlistPath,
         strategy: strat,
         quicPayloadPath: quic,
         decoySni: decoy,
+        sni: sniOn,
       );
       final p = await Process.start(exe, args, workingDirectory: dir);
       // The toggle may have been switched OFF during the spawn await → reap the
       // process we just started (don't leave a winws the user just disabled).
       // Gated on the TOGGLE, not the tunnel — winws runs independent of Connect.
-      if (!ref.read(settingsProvider).winwsDesync) {
+      final fresh = ref.read(settingsProvider);
+      if (!fresh.winwsDesync) {
         p.kill();
         _lastDesyncSig = 'off';
         if (state.desyncEngine != DesyncEngineStatus.off) {
@@ -1177,14 +1197,16 @@ class CoreController extends Notifier<CoreState> {
             state = state.copyWith(desyncEngine: DesyncEngineStatus.off);
           }
           _log('desync: winws exited unexpectedly');
-          // Self-heal if the toggle is still ON (tunnel-independent), capped.
-          if (ref.read(settingsProvider).winwsDesync && _desyncRespawns < 5) {
+          // Self-heal if either toggle is still ON (tunnel-independent), capped.
+          final s = ref.read(settingsProvider);
+          if (s.winwsDesync && _desyncRespawns < 5) {
             _desyncRespawns++;
             _scheduleDesyncReapply(); // bring it back after a transient AV/driver kill
           }
         }),
       );
-      _log('desync: winws engaged ($strat'
+      _log('desync: winws engaged ('
+          '${sniOn ? strat : 'sni-off'}'
           '${decoy != null ? ', decoy $decoy' : ''})');
       state = state.copyWith(desyncEngine: DesyncEngineStatus.active);
       // A spawn that SURVIVES a while isn't a crash-loop → restore the self-heal
@@ -2280,6 +2302,71 @@ class CoreController extends Notifier<CoreState> {
     }
   }
 
+  // Per-session ECH discovery cache (host → base64 ECHConfigList, or null when
+  // the host publishes none / DoH was unreachable). Keyed by server_name so a
+  // reconnect or cascade rebuild never re-queries.
+  final Map<String, String?> _echCache = {};
+
+  // Native ECH masquerade: enrich each plain-TLS (non-Reality) exit that has a
+  // server_name with its DNS-published ECH config, so the real SNI is encrypted
+  // and only the cover public_name is observable — the masquerade SpeedTop's
+  // vpnclirpc gets from BoringSSL+ECH, here on our own core. Reality is skipped
+  // (it masks its own SNI); a node already carrying an ech.config is left as-is.
+  // Fail-safe: any miss leaves the node exactly as built (sing-box may still do
+  // its own ECH-from-DNS via `enabled:true`).
+  void _applyEchDiscovery(Map<String, dynamic> cfg) {
+    final tlsTargets = <Map<String, dynamic>>[];
+    for (final o in [
+      ...?(cfg['outbounds'] as List?)?.whereType<Map>(),
+      ...?(cfg['endpoints'] as List?)?.whereType<Map>(),
+    ]) {
+      final tls = o['tls'];
+      if (tls is! Map || tls['enabled'] != true) continue;
+      final reality = tls['reality'];
+      if (reality is Map && reality['enabled'] != false) continue; // own masking
+      final ech = tls['ech'];
+      if (ech is Map && ech['config'] != null) continue; // carried already
+      final sni = tls['server_name']?.toString() ?? '';
+      if (sni.isEmpty) continue;
+      tlsTargets.add(tls.cast<String, dynamic>());
+    }
+    if (tlsTargets.isEmpty) return;
+    // Apply whatever is ALREADY cached — synchronous, no DoH, never blocks connect.
+    for (final t in tlsTargets) {
+      final b64 = _echCache[t['server_name'].toString()];
+      if (b64 == null || b64.isEmpty) continue;
+      final cur = t['ech'];
+      t['ech'] = {
+        if (cur is Map) ...cur,
+        'enabled': true,
+        'config': EchDiscovery.echConfigPem(b64),
+      };
+      _log('ECH: ${t['server_name']} → encrypted SNI behind a cover public_name');
+    }
+    // Warm the cache in the BACKGROUND for hosts not yet tried — the discovery
+    // must NEVER stall the connect (the pre-tunnel DoH hangs ~5s in RF where it's
+    // blocked) and NEVER re-leak an already-tried host's server_name. A failed
+    // lookup is cached as null (= tried) so it isn't re-queried every connect;
+    // meanwhile sing-box's own `enabled:true` ECH still resolves in-tunnel, and a
+    // real config kicks in on the next connect once a background lookup lands.
+    final toWarm = {for (final t in tlsTargets) t['server_name'].toString()}
+        .where((h) => !_echCache.containsKey(h))
+        .toList();
+    if (toWarm.isNotEmpty) unawaited(_warmEch(toWarm));
+  }
+
+  Future<void> _warmEch(List<String> hosts) async {
+    for (final h in hosts) {
+      if (_echCache.containsKey(h)) continue;
+      try {
+        final c = await EchDiscovery.fetchEchConfig(h);
+        _echCache[h] = (c != null && c.isNotEmpty) ? c : null; // cache negative too
+      } catch (_) {
+        _echCache[h] = null; // tried (DoH error) → don't repeat this session
+      }
+    }
+  }
+
   // Pull a bulk payload THROUGH the proxy to expose a 16KB connection-freeze a
   // tiny 204 can't see. Full body in time ⇒ healthy; a mid-stream STALL (started,
   // then no data) ⇒ frozen. A hard error is inconclusive (could be the target) ⇒
@@ -2287,6 +2374,10 @@ class CoreController extends Notifier<CoreState> {
   // + "arrived" threshold come from the ТСПУ-fact feed (②), defaulting baked.
   Future<bool> _bulkThroughOk() async {
     final facts = CensorshipFacts.active;
+    // ONE freeze floor for both branches — the success check and the stall
+    // signature must agree, else a feed threshold <16 leaves a stall between the
+    // (lower) threshold and a hardcoded 16KB undetected while reporting healthy.
+    final floor = facts.freezeThresholdKb * 1024;
     const stallWindow = Duration(
       seconds: 6,
     ); // no new bytes this long = stalled
@@ -2304,13 +2395,13 @@ class CoreController extends Notifier<CoreState> {
       await for (final chunk in resp.timeout(stallWindow)) {
         got += chunk.length;
       }
-      return got >= facts.freezeThresholdKb * 1024; // got the bulk ⇒ no freeze
+      return got >= floor; // got the bulk ⇒ no freeze
     } on TimeoutException {
       // Stalled. The 16KB-freeze signature is specifically "flowed PAST ~16KB then
       // froze" — so only call it a freeze if we actually crossed that wall. A stall
       // with little data is more likely a transient blip / slow start, so treat it
       // as inconclusive (don't burn a transport hop on a slow link).
-      return got < 16 * 1024;
+      return got < floor;
     } catch (_) {
       return true; // inconclusive (target/network) — don't false-flag a freeze
     } finally {

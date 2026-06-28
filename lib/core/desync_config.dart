@@ -130,11 +130,13 @@ class DesyncConfig {
   /// throttled host (YouTube/Google) is desynced too, not left on a stalled QUIC
   /// path. WITHOUT the payload no UDP block is emitted (a payload-less `fake` would
   /// inject a garbage QUIC Initial and could BREAK HTTP/3 instead of helping).
+  /// [sni] emits the SNI/hostlist profile (the default server-less bypass).
   static List<String> winwsArgs({
     required String hostlistPath,
     String strategy = defaultStrategy,
     String? quicPayloadPath,
     String? decoySni,
+    bool sni = true,
   }) {
     var method = strategies[strategy] ?? strategies[defaultStrategy]!;
     // ④ Rotate the fake-TLS DECOY SNI (gosuslugi.ru → another never-blocked RU host)
@@ -154,32 +156,42 @@ class DesyncConfig {
         method = [...method, '--dpi-desync-fake-tls-mod=padencap,sni=$decoySni'];
       }
     }
-    final args = <String>[
-      // Global WinDivert capture window — ONLY these ports enter the engine, so
-      // the kernel callout never touches the rest of the machine's traffic.
-      '--wf-tcp=80,443',
-      if (quicPayloadPath != null) '--wf-udp=443',
+    // Each entry is one winws filter group; flattened with `--new` between them.
+    final sections = <List<String>>[];
+    if (sni) {
       // TCP/443 — the TLS ClientHello SNI surface (the main DPI target).
-      '--filter-tcp=443',
-      ...method,
-      '--hostlist=$hostlistPath',
-      '--new',
+      sections.add(['--filter-tcp=443', ...method, '--hostlist=$hostlistPath']);
       // TCP/80 — the plaintext HTTP Host-header surface.
-      '--filter-tcp=80',
-      ...method,
-      '--hostlist=$hostlistPath',
+      sections.add(['--filter-tcp=80', ...method, '--hostlist=$hostlistPath']);
+      if (quicPayloadPath != null) {
+        // UDP/443 — QUIC/HTTP-3: a REAL fake QUIC Initial decoy poisons the DPI's
+        // QUIC SNI tracking; the real handshake still completes.
+        sections.add([
+          '--filter-udp=443',
+          '--dpi-desync=fake',
+          '--dpi-desync-repeats=6',
+          '--dpi-desync-fake-quic=$quicPayloadPath',
+          '--hostlist=$hostlistPath',
+        ]);
+      }
+    }
+    // Global WinDivert capture window — ONLY these ports enter the engine, so the
+    // kernel callout never touches the rest of the machine's traffic. Union of every
+    // active profile's ports, emitted ONCE (these flags are global, not per-group).
+    final tcpWin = <String>['80', '443'];
+    final udpWin = <String>{
+      // Open the UDP/443 capture window ONLY when the QUIC filter GROUP above is
+      // actually emitted (it lives inside `if (sni)`). Otherwise WinDivert would
+      // divert UDP/443 into the engine with no rule to act on it.
+      if (sni && quicPayloadPath != null) '443',
+    };
+    final args = <String>[
+      '--wf-tcp=${tcpWin.join(',')}',
+      if (udpWin.isNotEmpty) '--wf-udp=${udpWin.join(',')}',
     ];
-    if (quicPayloadPath != null) {
-      args.addAll([
-        '--new',
-        // UDP/443 — QUIC/HTTP-3: inject a REAL fake QUIC Initial decoy (repeated)
-        // to poison the DPI's QUIC SNI tracking; the real handshake still completes.
-        '--filter-udp=443',
-        '--dpi-desync=fake',
-        '--dpi-desync-repeats=6',
-        '--dpi-desync-fake-quic=$quicPayloadPath',
-        '--hostlist=$hostlistPath',
-      ]);
+    for (var i = 0; i < sections.length; i++) {
+      if (i > 0) args.add('--new');
+      args.addAll(sections[i]);
     }
     return args;
   }

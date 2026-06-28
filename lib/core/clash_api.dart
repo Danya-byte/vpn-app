@@ -160,17 +160,28 @@ class ClashApi {
   /// Streams traffic samples (bytes/sec up & down) from ws://.../traffic.
   Stream<Traffic> traffic() async* {
     final ws = await WebSocket.connect('ws://$host:$port/traffic',
-        headers: _secret.isEmpty
-            ? null
-            : {HttpHeaders.authorizationHeader: 'Bearer $_secret'});
+            headers: _secret.isEmpty
+                ? null
+                : {HttpHeaders.authorizationHeader: 'Bearer $_secret'})
+        .timeout(const Duration(seconds: 5)); // don't hang the graph on a dead core
     try {
       await for (final raw in ws) {
         if (raw is! String) continue;
-        final j = jsonDecode(raw) as Map<String, dynamic>;
-        yield Traffic(
-          up: (j['up'] as num?)?.toInt() ?? 0,
-          down: (j['down'] as num?)?.toInt() ?? 0,
-        );
+        // One malformed frame must NOT terminate the stream for the whole
+        // session (the live speed graph would freeze at zero) — skip it.
+        Traffic? sample;
+        try {
+          final d = jsonDecode(raw);
+          if (d is Map) {
+            sample = Traffic(
+              up: (d['up'] as num?)?.toInt() ?? 0,
+              down: (d['down'] as num?)?.toInt() ?? 0,
+            );
+          }
+        } catch (_) {
+          // ignore the bad frame, keep reading
+        }
+        if (sample != null) yield sample;
       }
     } finally {
       await ws.close();
@@ -189,25 +200,34 @@ class ClashApi {
       }
       final body = await resp.transform(utf8.decoder).join();
       final j = jsonDecode(body) as Map<String, dynamic>;
-      final conns = (((j['connections'] as List?) ?? const [])).map((e) {
-        final m = (e['metadata'] as Map?) ?? const {};
-        final host = (m['host'] as String?)?.isNotEmpty == true
-            ? m['host'] as String
-            : '${m['destinationIP'] ?? ''}:${m['destinationPort'] ?? ''}';
-        final chain = (((e['chains'] as List?) ?? const []))
-            .map((c) => c.toString())
-            .toList()
-            .reversed
-            .join(' → ');
-        return ClashConnection(
-          host: host,
-          network: (m['network'] ?? '').toString(),
-          chain: chain,
-          rule: (e['rule'] ?? '').toString(),
-          upload: (e['upload'] as num?)?.toInt() ?? 0,
-          download: (e['download'] as num?)?.toInt() ?? 0,
-        );
-      }).toList();
+      // Build each connection in its OWN guard: one malformed entry (non-Map, or
+      // a field of an unexpected type) must skip just that row, not null the whole
+      // Activity snapshot.
+      final conns = <ClashConnection>[];
+      for (final e in (j['connections'] as List?) ?? const []) {
+        if (e is! Map) continue;
+        try {
+          final m = e['metadata'] is Map ? e['metadata'] as Map : const {};
+          final host = (m['host'] as String?)?.isNotEmpty == true
+              ? m['host'] as String
+              : '${m['destinationIP'] ?? ''}:${m['destinationPort'] ?? ''}';
+          final chain = ((e['chains'] as List?) ?? const [])
+              .map((c) => c.toString())
+              .toList()
+              .reversed
+              .join(' → ');
+          conns.add(ClashConnection(
+            host: host,
+            network: (m['network'] ?? '').toString(),
+            chain: chain,
+            rule: (e['rule'] ?? '').toString(),
+            upload: (e['upload'] as num?)?.toInt() ?? 0,
+            download: (e['download'] as num?)?.toInt() ?? 0,
+          ));
+        } catch (_) {
+          // skip one bad entry, keep the rest of the snapshot
+        }
+      }
       return ConnectionsSnapshot(
         connections: conns,
         uploadTotal: (j['uploadTotal'] as num?)?.toInt() ?? 0,

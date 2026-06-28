@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -116,6 +117,56 @@ class ProfilesController extends Notifier<ProfilesState> {
   void _persist() =>
       ProfileStore.save(state.nodes, state.selected, state.subInfo);
 
+  /// Repair a dangling selection: if [state.selected] names no surviving node
+  /// (e.g. a refresh pruned the active server), the UI shows that stale tag while
+  /// [ProfilesState.selectedNode] silently falls through to `nodes.first` —
+  /// routing traffic through a DIFFERENT node than the one displayed. Re-point
+  /// the selection at `nodes.first`, persist, and log so the swap is explicit.
+  void _repairSelection({String? preferEndpoint}) {
+    if (_disposed) return;
+    final selected = state.selected;
+    if (selected == null || state.nodes.isEmpty) return;
+    if (state.nodes.any((n) => n.tag == selected)) return; // still valid
+    // Prefer a fresh node for the SAME server endpoint: a subscription refresh
+    // that tweaked a field (SNI/port/…) re-adds the same exit under a new
+    // content-key/tag, so mapping to it keeps a live tunnel on the server the
+    // user chose instead of silently relocating to a different country
+    // (nodes.first) on the 6-hourly refresh.
+    var repaired = state.nodes.first.tag;
+    if (preferEndpoint != null) {
+      for (final n in state.nodes) {
+        if (_endpointOf(n) == preferEndpoint) {
+          repaired = n.tag;
+          break;
+        }
+      }
+    }
+    developer.log(
+        'selected node "$selected" gone (pruned/renamed) -> "$repaired"',
+        name: 'profiles');
+    state = state.copyWith(selected: repaired);
+    _persist();
+    // A live tunnel is still routing through the now-deleted node's config —
+    // restart so traffic actually follows the repaired selection (else the UI
+    // shows one node while packets flow through the stale/gone one). Mirrors the
+    // restart in remove()/select().
+    if (_connected()) {
+      ref
+          .read(coreControllerProvider.notifier)
+          .restart(reason: 'pruned active node');
+    }
+  }
+
+  // server:port of a node's primary outbound — null for a full-config profile
+  // (empty outbound). Used to remap a pruned selection to the same server.
+  static String? _endpointOf(ParsedNode n) {
+    final o = n.outbound;
+    final s = o['server']?.toString();
+    final p = o['server_port'];
+    if (s == null || s.isEmpty || p == null) return null;
+    return '$s:$p';
+  }
+
   /// The whole profile store as a JSON string — for the "export profiles" backup
   /// (re-importable through [importText], which recognises the shape).
   String exportJson() =>
@@ -161,13 +212,26 @@ class ProfilesController extends Notifier<ProfilesState> {
         : ShareLink.parseSubscription(text);
     if (parsed.isEmpty) return const ImportResult(parsed: 0, added: 0);
 
-    final nodes = [...state.nodes];
+    var nodes = [...state.nodes];
+    // Endpoint of the currently-selected node, captured BEFORE the prune so a
+    // refresh that retires the active node can remap to the SAME server below.
+    String? prevEndpoint;
+    for (final n in state.nodes) {
+      if (n.tag == state.selected) {
+        prevEndpoint = _endpointOf(n);
+        break;
+      }
+    }
     final byContent = {for (final n in nodes) _contentKey(n): n.tag};
     final tags = {for (final n in nodes) n.tag};
     String? firstTag;
     final addedTags = <String>[];
     var added = 0;
+    // Content-keys present in THIS fetch — so a source refresh can prune the
+    // nodes that source no longer serves (below).
+    final freshKeys = <String>{};
     for (final p in parsed) {
+      freshKeys.add(_contentKey(p));
       final existing = byContent[_contentKey(p)];
       if (existing != null) {
         firstTag ??= existing; // already imported -> reuse its tag
@@ -198,6 +262,25 @@ class ProfilesController extends Notifier<ProfilesState> {
       added++;
     }
 
+    // Prune retired exits: when this is a subscription refresh (a known [source]
+    // that parsed >0 nodes), drop nodes tagged with this same source whose content
+    // is no longer in the fresh list — else a retired server lingers as
+    // selectable / failover-eligible forever ("dead nodes get swapped out").
+    // Other sources and hand-imported (source-less) nodes are untouched.
+    if (source != null && parsed.isNotEmpty) {
+      nodes = nodes
+          // Keep a PINNED node even when the fresh fetch doesn't content-match
+          // it: pinCertificate mutates the stored node (adds cert, insecure:false)
+          // so its _contentKey no longer equals the unpinned upstream — dropping
+          // it would silently destroy the deliberate cert-pin (the MITM fix) and
+          // re-add it insecure on the next 6h refresh.
+          .where((n) =>
+              n.source != source ||
+              n.pinned ||
+              freshKeys.contains(_contentKey(n)))
+          .toList();
+    }
+
     // Guard the async path: if the provider was disposed while a subscription
     // fetch was in flight, don't touch state (it would throw).
     if (_disposed) {
@@ -224,6 +307,10 @@ class ProfilesController extends Notifier<ProfilesState> {
               : (selectFirst ? (firstTag ?? state.selected) : state.selected),
     );
     _persist();
+    // A refresh may have pruned the selected node — repair a now-dangling
+    // selection (preferring the SAME server) so the tunnel never silently
+    // relocates to nodes.first / a different country.
+    _repairSelection(preferEndpoint: prevEndpoint);
     return ImportResult(
         parsed: parsed.length,
         added: added,
@@ -342,6 +429,10 @@ class ProfilesController extends Notifier<ProfilesState> {
         // skip an unreachable / failed source
       }
     }
+    // Final safety net after all sources: ensure the active selection still names
+    // a live node (importText repairs per-source, but a multi-source prune could
+    // leave it dangling otherwise).
+    _repairSelection();
     return ImportResult(parsed: parsed, added: added, firstTag: firstTag);
   }
 

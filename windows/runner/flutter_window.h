@@ -70,9 +70,17 @@ class FlutterWindow : public Win32Window {
   void RemoveTrayIcon();
   void ShowFromTray();
   void ShowTrayMenu();
+  void SetTrayTooltip(const std::wstring& text);
+  void ShowTrayNotification(const std::wstring& title, const std::wstring& msg);
   bool tray_added_ = false;
   bool close_to_tray_ = true;
   bool quitting_ = false;  // a real Quit (tray menu) vs a hide-to-tray close
+  // Tray-menu labels — Dart pushes localized, state-aware strings (the toggle
+  // reads "Connect" when off / "Disconnect" when on) via setTrayLabels.
+  std::wstring tray_toggle_label_ = L"Connect";
+  std::wstring tray_show_label_ = L"Show";
+  std::wstring tray_quit_label_ = L"Quit";
+  std::wstring tray_tooltip_ = L"VPN App";
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

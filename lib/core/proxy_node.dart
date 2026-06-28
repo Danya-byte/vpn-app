@@ -49,7 +49,7 @@ class ParsedNode {
     if (!isConfig) return risky(outbound);
     // A config hides TLS under outbounds and (WG/Tailscale) endpoints.
     for (final key in const ['outbounds', 'endpoints']) {
-      for (final o in (config?[key] as List?) ?? const []) {
+      for (final o in _listAt(config, key)) {
         if (risky(o)) return true;
       }
     }
@@ -73,7 +73,7 @@ class ParsedNode {
 
     if (!isConfig) return hasCert(outbound);
     for (final key in const ['outbounds', 'endpoints']) {
-      for (final o in (config?[key] as List?) ?? const []) {
+      for (final o in _listAt(config, key)) {
         if (hasCert(o)) return true;
       }
     }
@@ -110,7 +110,7 @@ class ParsedNode {
 
     final servers = <String>{};
     for (final key in const ['outbounds', 'endpoints']) {
-      for (final o in (config?[key] as List?) ?? const []) {
+      for (final o in _listAt(config, key)) {
         if (o is Map && o['server'] != null && risky(o)) {
           servers.add('${o['server']}:${portOf(o)}');
         }
@@ -137,4 +137,13 @@ class ParsedNode {
     }
     return h;
   }
+}
+
+// Safe read of a config sub-list. A hostile / hand-edited config may carry
+// `outbounds`/`endpoints` as a Map/String/number — a bare `as List` would throw
+// a TypeError inside the safety-preview dialog (the exact gate meant to protect
+// the user from that config). Any non-List degrades to empty.
+List _listAt(Map? config, String key) {
+  final v = config?[key];
+  return v is List ? v : const [];
 }

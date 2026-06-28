@@ -95,12 +95,14 @@ jobs:
       - run: flutter pub get
 
       # SHA-256-pinned cores (sing-box + xray) + rule-sets + the desync engine
-      # (winws/WinDivert/quic_initial), per tool/fetch-cores.ps1. -IncludeDesync is
-      # REQUIRED: it ships the headline "server-less DPI bypass" — without it every
-      # release is desync-less and that feature is permanently `missing`.
+      # (winws/WinDivert/quic_initial) + the AmneziaWG userspace bridge (awg.exe),
+      # per tool/fetch-cores.ps1. -IncludeDesync is REQUIRED: it ships the headline
+      # "server-less DPI bypass" - without it every release is desync-less and that
+      # feature is permanently `missing`. -IncludeAmnezia ships awg.exe so imported
+      # AmneziaWG configs actually run instead of staying detect-and-fail.
       - name: Fetch pinned cores
         shell: pwsh
-        run: ./tool/fetch-cores.ps1 -IncludeXray -IncludeDesync
+        run: ./tool/fetch-cores.ps1 -IncludeXray -IncludeDesync -IncludeAmnezia
 
       # Gate the release on a clean analyze + the full suite (incl. the REAL
       # `sing-box check` against the just-fetched core). A broken build must never

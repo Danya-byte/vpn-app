@@ -22,10 +22,15 @@ class NativeAdmin {
   }
 
   /// Open a URL in the default browser (native ShellExecute, no plugin).
-  static Future<void> openUrl(String url) async {
+  /// Returns false if the native call threw, so a caller can surface a failure
+  /// toast instead of a silent no-op.
+  static Future<bool> openUrl(String url) async {
     try {
       await _ch.invokeMethod('openUrl', {'url': url});
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Register / unregister `vpn://` + `sing-box://` URL handlers and the `.json`
@@ -59,6 +64,46 @@ class NativeAdmin {
   static Future<void> setCloseToTray(bool on) async {
     try {
       await _ch.invokeMethod('setCloseToTray', {'on': on});
+    } catch (_) {}
+  }
+
+  /// Push localized, state-aware labels for the tray context menu (the native
+  /// menu just renders what we give it). [toggle] is "Connect" when off /
+  /// "Disconnect" when on.
+  static Future<void> setTrayLabels(
+      {required String toggle,
+      required String show,
+      required String quit}) async {
+    try {
+      await _ch.invokeMethod(
+          'setTrayLabels', {'toggle': toggle, 'show': show, 'quit': quit});
+    } catch (_) {}
+  }
+
+  /// Bring the window back from the tray (e.g. to gate an insecure-node consent
+  /// that can't be shown while hidden).
+  static Future<void> showWindow() async {
+    try {
+      await _ch.invokeMethod('showWindow');
+    } catch (_) {}
+  }
+
+  /// The tray icon's hover tooltip — reflects the live connection state.
+  static Future<void> setTrayTooltip(String text) async {
+    try {
+      await _ch.invokeMethod('setTrayTooltip', {'text': text});
+    } catch (_) {}
+  }
+
+  /// Pop a tray balloon notification. The native side shows it ONLY when the
+  /// window is hidden (in the tray) — so it's the feedback the user gets when
+  /// they connect/disconnect from the tray with the window closed, including the
+  /// error text when a connect fails. Clicking the balloon opens the window.
+  static Future<void> showTrayNotification(
+      {required String title, required String message}) async {
+    try {
+      await _ch.invokeMethod(
+          'showTrayNotification', {'title': title, 'message': message});
     } catch (_) {}
   }
 

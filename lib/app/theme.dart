@@ -8,6 +8,37 @@ class AppTheme {
   static const Color _surface = Color(0xFF161B22);
   static const Color _surfaceHigh = Color(0xFF1C232D);
 
+  // ── Semantic colour tokens (dark-only theme). Use THESE instead of ad-hoc
+  // hex so success/warning/danger mean ONE colour app-wide — replacing the
+  // duplicated amber 0xFFE0A53D, the stray Tailwind green 0xFF4ADE80, and loose
+  // Colors.orange/Colors.red usages the audit found scattered across screens.
+  static const Color success = _seed; // the ONE success green (== primary)
+  static const Color warning = Color(0xFFE0A53D); // the ONE warning amber
+  static const Color danger = Color(0xFFE5544B); // destructive / error red
+  static const Color info = Color(0xFF3B82F6); // informational blue (matches backdrop)
+
+  // ── Named type scale (px). The audit found ad-hoc 22/17/16/14.5/12.5/10.5/9.5
+  // for the SAME roles; snap to these so titles/body/captions are consistent.
+  static const double tsTitle = 20; // screen header (w700) — PageHeader
+  static const double tsHeading = 16; // dialog / section title (w700)
+  static const double tsBody = 13; // primary body / list / button text
+  static const double tsLabel = 12; // secondary labels, chips
+  static const double tsCaption = 11; // hints/captions — the readable FLOOR
+  static const double tsMicro = 10; // badges ONLY (always near-full alpha)
+  // Secondary-text opacity floor: text this faint must be >= tsCaption in size.
+  static const double alphaSecondary = 0.66;
+
+  // ── Named radius scale. Audit: r6/r8/r10/r12/r14/r18/r22 for the same roles.
+  static const double rChip = 8; // small chips / badges
+  static const double rButton = 12; // buttons / inputs / inner panels
+  static const double rPanel = 14; // inset panels (code box, menus)
+  static const double rCard = 18; // cards / banners
+  static const double rDialog = 24; // centered dialogs
+  static const double rSheet = 28; // bottom sheets
+
+  // ── Shared layout constants (were duplicated magic numbers across files).
+  static const double kNavReserve = 96; // clearance under the floating bottom nav
+
   static ThemeData get dark {
     final scheme = ColorScheme.fromSeed(
       seedColor: _seed,

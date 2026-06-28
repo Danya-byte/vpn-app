@@ -33,14 +33,7 @@ class SingBoxConfig {
         'experimental': {
           'clash_api': _clashApi(),
         },
-        'inbounds': [
-          {
-            'type': 'mixed',
-            'tag': 'mixed-in',
-            'listen': mixedListen,
-            'listen_port': mixedPort,
-          }
-        ],
+        'inbounds': _baseInbounds(), // single 127.0.0.1 mixed inbound (matches the system proxy)
         'outbounds': [
           {'type': 'direct', 'tag': 'direct'},
         ],
@@ -179,6 +172,14 @@ class SingBoxConfig {
   /// custom value is still DPI-resistant — picking a plain blocked resolver would
   /// just break resolution, hence the default stays a known-good one.
   static String dnsServer = '77.88.8.8';
+
+  /// Domestic DNS carve-out: RU/ex-USSR TLDs resolve via the DIRECT resolver
+  /// (off-tunnel, RU-reachable) instead of being dragged through the foreign exit
+  /// — keeps RU DNS fast and reachable even when the tunnel exit stalls. Emitted
+  /// ALWAYS (no rule-set needed), mirroring how Hiddify carves out `.ru`. ASCII
+  /// suffixes only (an IDN like .рф is punycode on the wire, so a literal Cyrillic
+  /// suffix would never match the sniffed SNI).
+  static const List<String> ruDnsSuffixes = ['.ru', '.su'];
 
   /// Benign foreign control IPs the watchdog raw-dials to tell a real "whitelist
   /// mode" collapse (every foreign SYN dropped) from a mere node block. In TUN
@@ -350,7 +351,7 @@ class SingBoxConfig {
       required bool ech}) {
     if (node.outbound.isEmpty) return node; // config profile, nothing to tweak
     final ob = jsonDecode(jsonEncode(node.outbound)) as Map<String, dynamic>;
-    _applyLevers(ob, antiDpi: antiDpi, fp: fp, mux: mux, ech: ech);
+    _applyLevers(ob, antiDpi: antiDpi, fp: fp, mux: mux, ech: ech, ownNode: true);
     return ParsedNode(tag: node.tag, outbound: ob, config: node.config);
   }
 
@@ -371,8 +372,19 @@ class SingBoxConfig {
       {required bool antiDpi,
       required String fp,
       required bool mux,
-      required bool ech}) {
+      required bool ech,
+      bool ownNode = false}) {
     final type = ob['type']?.toString();
+    // VLESS UDP (QUIC / HTTP3 / DoQ / voice) needs xudp packet-encoding to carry
+    // multi-destination UDP correctly. Without it XTLS-Vision falls back to a
+    // legacy encoding that mishandles those flows → "connects but HTTP/3 sites
+    // hang". The proven Hiddify config sets this on the identical node. ONLY for
+    // OUR OWN generated nodes (ownNode) — never an IMPORTED full sing-box config,
+    // where the author may have deliberately omitted it for an older server that
+    // doesn't speak xudp (flipping it there would break a node that worked).
+    if (ownNode && type == 'vless' && ob['packet_encoding'] == null) {
+      ob['packet_encoding'] = 'xudp';
+    }
     final isTcpProxy = type == 'vless' || type == 'vmess' || type == 'trojan';
     final tls = ob['tls'];
     if (tls is Map && tls['enabled'] == true) {
@@ -405,7 +417,16 @@ class SingBoxConfig {
           final useFp = fp == 'yandex' ? 'chrome' : fp; // no literal 'yandex'
           t['utls'] = {...?utls, 'enabled': true, 'fingerprint': useFp};
         }
-        if (ech) t['ech'] = {'enabled': true};
+        if (ech) {
+          // Floor: enable ECH so sing-box auto-resolves the ECHConfigList over
+          // its OWN (in-tunnel) DNS — the path that still works in RF where the
+          // pre-tunnel DoH the discovery pass uses (1.1.1.1/8.8.8.8) is dropped.
+          // The discovery pass (core_controller._applyEchDiscovery) ADDS a
+          // concrete config when a pre-tunnel lookup succeeds; a host that
+          // publishes none is a cheap no-op DNS query, not a failed connect.
+          final curEch = t['ech'];
+          t['ech'] = {if (curEch is Map) ...curEch, 'enabled': true};
+        }
         if (antiDpi && isTcpProxy) {
           t['fragment'] = true;
           t['fragment_fallback_delay'] = '500ms';
@@ -438,13 +459,18 @@ class SingBoxConfig {
     }
   }
 
+  // Local proxy on IPv4 loopback only. We set the Windows system proxy to the
+  // IP literal 127.0.0.1:2080, so proxy-aware apps (incl. Chromium/Electron /
+  // the Claude desktop app) connect over IPv4 — a ::1 listener bought nothing and
+  // a 2nd inbound on ::1 would FATAL the whole core on a host with IPv6 disabled
+  // (a hard regression vs IPv4-only). Loopback-only (never 0.0.0.0) → off the LAN.
   static List<Map<String, dynamic>> _baseInbounds() => [
         {
           'type': 'mixed',
           'tag': 'mixed-in',
           'listen': mixedListen,
           'listen_port': mixedPort,
-        }
+        },
       ];
 
   static Map<String, dynamic> _global(
@@ -464,20 +490,38 @@ class SingBoxConfig {
                 'inet4_range': _fakeipRange,
                 'inet6_range': _fakeipRange6,
               },
-            {'type': 'https', 'tag': 'dns-proxy', 'server': '1.1.1.1', 'detour': tag},
+            // Foreign names resolve over the TUNNEL via UDP DNS to 8.8.8.8. UDP
+            // datagrams are INDEPENDENT (matched by query-id) so a cold-start
+            // burst of many lookups resolves in PARALLEL — unlike DoH/TCP-over-
+            // tunnel, where queries pile onto ONE connection that head-of-line
+            // STALLS (observed: 6–34s lookups while real data flowed at 160ms).
+            // Our xudp packet-encoding carries the UDP; the tunnel hides it from
+            // DPI. Paired with the persistent DNS cache below (Hiddify-style).
+            {'type': 'udp', 'tag': 'dns-proxy', 'server': '8.8.8.8', 'detour': tag},
             // No `detour: direct` — a DNS server dials direct by default, and
             // 1.13 FATALs on "detour to an empty direct outbound".
             {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
           ],
-          if (fakeip)
-            'rules': [
-              {'query_type': ['A', 'AAAA'], 'server': 'dns-fake'},
-            ],
+          'rules': [
+            // RU/ex-USSR domains resolve via the DIRECT resolver (off-tunnel,
+            // RU-reachable) so RU DNS stays fast even if the foreign exit stalls —
+            // ALWAYS on, no rule-set needed. Foreign names still ride dns-proxy.
+            {'domain_suffix': ruDnsSuffixes, 'server': 'dns-direct'},
+            if (fakeip) {'query_type': ['A', 'AAAA'], 'server': 'dns-fake'},
+          ],
           'final': 'dns-proxy',
           'strategy': 'ipv4_only', // RF has no working IPv6
+          // Keep answers across the session AND reconnects (cache_file below) so a
+          // restart doesn't re-pay the slow cold-resolve burst; independent_cache
+          // stops the direct + tunnel resolvers poisoning each other. (Hiddify.)
+          'independent_cache': true,
+          'disable_expire': true,
         },
         'experimental': {
           'clash_api': _clashApi(),
+          // Persist the DNS cache to disk so reconnects start WARM (Hiddify does
+          // this). No path → sing-box writes cache.db in its working dir.
+          'cache_file': {'enabled': true},
         },
         'inbounds': _baseInbounds(),
         'outbounds': [
@@ -503,6 +547,11 @@ class SingBoxConfig {
     // config (everything via proxy, only private IPs direct) rather than
     // reference a rule-set that isn't on disk (which FATALs the core).
     final useRuleSets = ruleSetsReady && ruleSetDir.isNotEmpty;
+    // FakeIP is only SAFE alongside the geosite-ru DNS carve-out: without it the
+    // fakeip catch-all also synthesises RU domains → gov/banks resolve to a fake
+    // IP, route by domain out the FOREIGN exit and reverse-geo-block while the UI
+    // says Connected. So engage FakeIP only when rule-sets are ready.
+    final useFakeip = fakeip && useRuleSets;
     return {
       'log': {'level': logLevel, 'timestamp': true},
       'dns': {
@@ -510,29 +559,38 @@ class SingBoxConfig {
           // FakeIP (opt-in, TUN): instant synthetic answer → route by domain →
           // EXIT resolves the real IP. RU domains are excluded below (they get a
           // REAL direct answer so RU-direct routing still works on a real IP).
-          if (fakeip)
+          if (useFakeip)
             {
               'type': 'fakeip',
               'tag': 'dns-fake',
               'inet4_range': _fakeipRange,
               'inet6_range': _fakeipRange6,
             },
-          {'type': 'https', 'tag': 'dns-proxy', 'server': '1.1.1.1', 'detour': tag},
+          // Foreign DNS over the tunnel via UDP (independent datagrams resolve a
+          // cold burst in PARALLEL; TCP/DoH-over-tunnel serialised them to 6–34s).
+          // xudp carries it; tunnel hides it from DPI. (See _global.)
+          {'type': 'udp', 'tag': 'dns-proxy', 'server': '8.8.8.8', 'detour': tag},
           {'type': 'https', 'tag': 'dns-direct', 'server': dnsServer},
         ],
-        if (useRuleSets || fakeip)
-          'rules': [
-            // RU domains FIRST → real direct DNS (NOT fakeip) so RU-direct routing
-            // matches on a real IP.
-            if (useRuleSets) {'rule_set': 'geosite-ru', 'server': 'dns-direct'},
-            // everything else → fakeip (foreign rides the proxy by domain).
-            if (fakeip) {'query_type': ['A', 'AAAA'], 'server': 'dns-fake'},
-          ],
+        'rules': [
+          // RU/ex-USSR by suffix → real DIRECT DNS (off-tunnel), ALWAYS — even with
+          // no rule-set on disk — so RU DNS is fast and reachable. geosite-ru adds
+          // the broader RU set when the bundled rule-sets are present.
+          {'domain_suffix': ruDnsSuffixes, 'server': 'dns-direct'},
+          if (useRuleSets) {'rule_set': 'geosite-ru', 'server': 'dns-direct'},
+          // everything else → fakeip (foreign rides the proxy by domain). Gated on
+          // useFakeip so it never runs without the RU carve-out above.
+          if (useFakeip) {'query_type': ['A', 'AAAA'], 'server': 'dns-fake'},
+        ],
         'final': 'dns-proxy',
         'strategy': 'ipv4_only',
+        // Persistent + independent DNS cache so reconnects start warm (Hiddify).
+        'independent_cache': true,
+        'disable_expire': true,
       },
       'experimental': {
         'clash_api': _clashApi(),
+        'cache_file': {'enabled': true},
       },
       'inbounds': _baseInbounds(),
       'outbounds': [
@@ -1059,14 +1117,41 @@ class SingBoxConfig {
         const {'direct', 'block', 'dns-out', 'dns'}.contains(proxyTag)) {
       return; // no foreign exit to pin Telegram to
     }
-    final rules = [...(route['rules'] as List? ?? const [])];
-    String join(dynamic v) => v is List ? v.join(',') : '${v ?? ''}';
-    final already = rules.any((r) =>
-        r is Map &&
-        (join(r['ip_cidr']).contains('149.154.16') ||
-            join(r['domain_suffix']).contains('t.me') ||
-            join(r['domain_suffix']).contains('telegram')));
-    if (already) return; // author already handles Telegram routing
+    final rawRules = route['rules'];
+    final rules = [...(rawRules is List ? rawRules : const [])];
+    // Key-agnostic guard: if ANY existing rule mentions Telegram (via
+    // domain_suffix / domain / domain_keyword / geosite / a DC CIDR) the author
+    // already routes it — don't shadow their explicit intent (e.g. Telegram→direct).
+    // The old guard only scanned domain_suffix/ip_cidr and missed those keys.
+    bool mentionsTelegram(Map r) {
+      // Scan ONLY the MATCH keys — what a rule TARGETS. Flattening every value
+      // (incl. the outbound/action) made a destination GROUP named e.g.
+      // 'TelegramSpeed' read as "author already routes Telegram", and a bare
+      // 't.me' substring matched unrelated domains ('clien[t.me]nu',
+      // 'prin[t.me]dia'). Both falsely skipped the Telegram pin.
+      const matchKeys = {
+        'domain', 'domain_suffix', 'domain_keyword', 'geosite', 'rule_set',
+        'ip_cidr', 'source_ip_cidr',
+      };
+      for (final e in r.entries) {
+        if (!matchKeys.contains(e.key)) continue;
+        final vals = e.value is List ? e.value as List : [e.value];
+        for (final raw in vals) {
+          final s = '$raw'.toLowerCase().trim();
+          // geosite/keyword 'telegram', domains telegram.org / t.me, and the DC
+          // CIDRs — each anchored so a substring can't false-match.
+          if (s == 'telegram' || s.contains('telegram')) return true;
+          if (s == 't.me' || s.endsWith('.t.me')) return true;
+          // IP prefixes anchored per token — '91.108.' must not match
+          // '191.108.x.y/16'.
+          if (s.startsWith('149.154.16') || s.startsWith('91.108.')) return true;
+        }
+      }
+      return false;
+    }
+    if (rules.any((r) => r is Map && mentionsTelegram(r))) {
+      return; // author already handles Telegram routing
+    }
 
     // Insert after leading sniff/hijack-dns so DNS still works, but BEFORE the
     // RU-direct / private / proxy-everything rules.
@@ -1509,6 +1594,16 @@ class SingBoxConfig {
       }
     }
     merged.insertAll(at, appRules);
+    // IPv6 fail-fast — appended LAST so it only catches v6 flows that matched no
+    // earlier, more-specific rule (Telegram→tunnel, private→direct, geo-direct all
+    // still win for v6 — the audit caught this shadowing the Telegram pin). Every
+    // exit + the in-tunnel DNS are IPv4-only, so an unmatched v6 flow would
+    // otherwise black-hole until the app's Happy-Eyeballs timeout; `reject` stays
+    // fail-CLOSED (the ULA still captures v6, no leak) but returns at once → v4.
+    if (!merged.any(
+        (r) => r is Map && r['ip_version'] == 6 && r['action'] == 'reject')) {
+      merged.add({'ip_version': 6, 'action': 'reject'});
+    }
     route['rules'] = merged;
 
     // Ensure hijacked DNS has somewhere to resolve.

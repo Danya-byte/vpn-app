@@ -2,9 +2,10 @@ import 'dart:io' show InternetAddress;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
-    show Clipboard, ClipboardData, FilteringTextInputFormatter, MethodChannel;
+    show FilteringTextInputFormatter, MethodChannel;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart'; // StateProvider (moved in Riverpod 3)
+import 'package:vpn_app/app/theme.dart';
 
 import '../../core/app_settings.dart';
 import '../../core/censorship_facts_feed.dart';
@@ -14,6 +15,7 @@ import '../../core/native_admin.dart';
 import '../../core/profiles_controller.dart';
 import '../../core/route_mode.dart';
 import '../../core/route_rule.dart';
+import '../../core/telegram_native_provider.dart';
 import '../../core/update_check.dart';
 import '../../core/webdav_sync.dart';
 import '../../l10n/app_localizations.dart';
@@ -103,12 +105,13 @@ Widget _switchTile({
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.info_outline, size: 13, color: Color(0xFFE0A53D)),
+                const Icon(Icons.info_outline,
+                    size: 13, color: AppTheme.warning),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(hint,
                       style: const TextStyle(
-                          fontSize: 11, color: Color(0xFFE0A53D))),
+                          fontSize: 11, color: AppTheme.warning)),
                 ),
               ],
             ),
@@ -242,8 +245,17 @@ class SettingsPage extends ConsumerWidget {
                 segments: VpnMode.values,
                 labelOf: (m) =>
                     m == VpnMode.systemProxy ? l.vpnModeProxy : l.vpnModeTun,
-                onChanged: (m) =>
-                    ref.read(settingsProvider.notifier).setVpnMode(m),
+                onChanged: (m) {
+                  // TUN needs admin. Switching to it WHILE CONNECTED in proxy
+                  // mode would fire a live-restart that fails the tunMode guard
+                  // and tear the working connection into an error. So when not
+                  // elevated, offer elevation instead of flipping the mode.
+                  if (m == VpnMode.tun && !elevated) {
+                    NativeAdmin.relaunchElevated();
+                    return;
+                  }
+                  ref.read(settingsProvider.notifier).setVpnMode(m);
+                },
               ),
               const SizedBox(height: 10),
               Text(
@@ -264,12 +276,12 @@ class SettingsPage extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Icon(Icons.info_outline,
-                        size: 14, color: Color(0xFFE0A53D)),
+                        size: 14, color: AppTheme.warning),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(l.proxyAppsHint,
                           style: const TextStyle(
-                              fontSize: 11.5, color: Color(0xFFE0A53D))),
+                              fontSize: 11.5, color: AppTheme.warning)),
                     ),
                   ],
                 ),
@@ -279,42 +291,44 @@ class SettingsPage extends ConsumerWidget {
                 // alone is TCP-only). matches SingBoxConfig.mixedListen:mixedPort.
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: InkWell(
-                    onTap: () {
-                      Clipboard.setData(
-                          const ClipboardData(text: '127.0.0.1:2080'));
-                      AppToast.of(context).message(l.proxyAddrCopied);
-                    },
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: scheme.primary.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                            color: scheme.primary.withValues(alpha: 0.4)),
+                  child: CopyFlash(
+                    text: '127.0.0.1:2080',
+                    onCopied: () =>
+                        AppToast.of(context).message(l.proxyAddrCopied),
+                    builder: (context, done, copy) => InkWell(
+                      onTap: copy,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: scheme.primary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: scheme.primary.withValues(alpha: 0.4)),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(done ? Icons.check_rounded : Icons.copy_rounded,
+                              size: 13,
+                              color: done ? AppTheme.success : scheme.primary),
+                          const SizedBox(width: 6),
+                          Text('SOCKS5  127.0.0.1:2080',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: scheme.primary)),
+                        ]),
                       ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        Icon(Icons.copy_rounded,
-                            size: 13, color: scheme.primary),
-                        const SizedBox(width: 6),
-                        Text('SOCKS5  127.0.0.1:2080',
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: scheme.primary)),
-                      ]),
                     ),
                   ),
                 ),
               ],
               if (vpnMode == VpnMode.tun && !elevated) ...[
                 const SizedBox(height: 12),
-                FilledButton.icon(
+                TgButton(
                   onPressed: () => NativeAdmin.relaunchElevated(),
-                  icon: const Icon(Icons.shield_rounded, size: 18),
-                  label: Text(l.restartAsAdmin),
+                  icon: Icons.shield_rounded,
+                  label: l.restartAsAdmin,
                 ),
               ],
             ],
@@ -424,13 +438,18 @@ class SettingsPage extends ConsumerWidget {
           // Network resistance — grouped (anti-DPI + "hard network" for mobile
           // operators, which forces fragmentation + the active survivor-cascade).
           _switchGroup([
+            // maxResistance FORCES fragmentation on (core_controller: antiDpi =
+            // maxResistance ? true : …), so when it's on we show this tile as a
+            // locked ON — not an independent toggle that contradicts it.
             _switchTile(
               scheme: scheme,
               title: l.antiDpiTitle,
               desc: l.antiDpiDesc,
-              value: antiDpi,
+              value: maxResistance ? true : antiDpi,
+              enabled: !maxResistance,
               onChanged: (v) =>
                   ref.read(settingsProvider.notifier).setAntiDpi(v),
+              hint: maxResistance ? l.antiDpiForcedHint : null,
             ),
             _switchTile(
               scheme: scheme,
@@ -445,6 +464,12 @@ class SettingsPage extends ConsumerWidget {
           // Server-less WinDivert DPI-bypass (winws sidecar) — the heavy-resistance
           // layer that survives TLS-fragment reassembly. Needs admin + the binary.
           const _DesyncCard(),
+          const SizedBox(height: 12),
+          // Serverless Telegram unblock via the bundled tgcore.exe — a local
+          // MTProxy that bridges Telegram to its un-throttled web gateway over a
+          // uTLS-masked WebSocket. No admin for the base (it IS a binary, tgcore);
+          // the user opens a one-tap tg://proxy link. ("Calls" desync needs admin.)
+          const _TelegramNativeCard(),
           const SizedBox(height: 12),
           // uTLS fingerprint pool.
           GlassCard(
@@ -724,13 +749,29 @@ class SettingsPage extends ConsumerWidget {
   ) {
     final scheme = Theme.of(context).colorScheme;
     final selected = current == code;
-    return ListTile(
-      dense: true,
-      title: Text(label),
-      trailing: selected
-          ? Icon(Icons.check_rounded, color: scheme.primary, size: 20)
-          : null,
+    // Glass InkWell row (was a stock dense ListTile) — matches the app's row
+    // pattern; the check uses the brand accent + the label goes emerald+bold.
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppTheme.rButton),
       onTap: () => ref.read(settingsProvider.notifier).setLocale(code),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  color: selected ? scheme.primary : scheme.onSurface,
+                ),
+              ),
+            ),
+            if (selected)
+              Icon(Icons.check_rounded, color: scheme.primary, size: 20),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -758,10 +799,10 @@ class _DesyncCard extends ConsumerWidget {
     final confirmedNotElevated =
         elevatedAsync.hasValue && elevatedAsync.value == false;
 
-    // No status line at all when the toggle is off — gate once, so a future
-    // status can't accidentally render while disabled. The engine status is only
-    // KNOWN after a connect, but we surface readiness immediately: confirmed-not-
-    // elevated -> "needs admin" right away (WinDivert can't load otherwise).
+    // No status line at all when the toggle is off — gate once, so a future status
+    // can't accidentally render while disabled. The engine status is only KNOWN
+    // after a connect, but we surface readiness immediately: confirmed-not-elevated
+    // -> "needs admin" right away (WinDivert can't load otherwise).
     Widget? statusLine;
     if (on) {
       if (status == DesyncEngineStatus.active) {
@@ -770,7 +811,8 @@ class _DesyncCard extends ConsumerWidget {
               child: _line(Icons.check_circle, scheme.primary, l.desyncActive)),
           // ② Site still blocked? One tap advances to the next preset + ④ decoy SNI
           // (the user has ground truth — they can see the page didn't open).
-          TextButton(
+          GlassButton(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             onPressed: () {
               final ok =
                   ref.read(coreControllerProvider.notifier).desyncEscalate();
@@ -782,20 +824,22 @@ class _DesyncCard extends ConsumerWidget {
         ]);
       } else if (status == DesyncEngineStatus.missing) {
         statusLine =
-            _line(Icons.error_outline, Colors.orangeAccent, l.desyncMissing);
+            _line(Icons.error_outline, AppTheme.warning, l.desyncMissing);
       } else if (status == DesyncEngineStatus.needsAdmin ||
           confirmedNotElevated) {
         statusLine = Row(children: [
           Expanded(
-              child: _line(Icons.shield_outlined, Colors.orangeAccent,
+              child: _line(Icons.shield_outlined, AppTheme.warning,
                   l.desyncNeedsAdmin)),
-          TextButton(
+          GlassButton(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             onPressed: () => NativeAdmin.relaunchElevated(),
             child: Text(l.restartAsAdmin, style: const TextStyle(fontSize: 12)),
           ),
         ]);
       } else {
-        // elevated + toggle on, but not connected yet -> it engages on connect.
+        // elevated + toggle on — the server-less engine engages on the TOGGLE,
+        // not on Connect; this is the brief pre-spawn window before it goes active.
         statusLine = _line(Icons.info_outline,
             scheme.onSurface.withValues(alpha: 0.6), l.desyncIdle);
       }
@@ -860,29 +904,16 @@ class _DesyncCard extends ConsumerWidget {
             if (on)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: SegmentedButton<String>(
-                    showSelectedIcon: false,
-                    style: _segStyle(scheme),
-                    // Built from DesyncConfig.strategies.keys so a new preset
-                    // added there auto-appears here (no hardcoded UI drift).
-                    segments: [
-                      for (final key in DesyncConfig.strategies.keys)
-                        ButtonSegment(
-                            value: key,
-                            label: Text(_desyncStratLabel(l, key),
-                                style: const TextStyle(fontSize: 11.5))),
-                    ],
-                    selected: {
-                      DesyncConfig.isValidStrategy(strategy)
-                          ? strategy
-                          : DesyncConfig.defaultStrategy
-                    },
-                    onSelectionChanged: (s) => ref
-                        .read(settingsProvider.notifier)
-                        .setDesyncStrategy(s.first),
-                  ),
+                child: GlassSegmented<String>(
+                  // Built from DesyncConfig.strategies.keys so a new preset
+                  // added there auto-appears here (no hardcoded UI drift).
+                  value: DesyncConfig.isValidStrategy(strategy)
+                      ? strategy
+                      : DesyncConfig.defaultStrategy,
+                  segments: DesyncConfig.strategies.keys.toList(),
+                  labelOf: (key) => _desyncStratLabel(l, key),
+                  onChanged: (v) =>
+                      ref.read(settingsProvider.notifier).setDesyncStrategy(v),
                 ),
               ),
           ],
@@ -900,6 +931,188 @@ class _DesyncCard extends ConsumerWidget {
             child: Text(text,
                 style: TextStyle(fontSize: 11.5, color: color)),
           ),
+        ],
+      );
+}
+
+/// Native serverless Telegram unblock (tgcore.exe) — a local MTProxy that
+/// bridges Telegram to its un-throttled web gateway over a uTLS-masked
+/// WebSocket. The real engine; replaces the experimental in-app WS bridge.
+class _TelegramNativeCard extends ConsumerWidget {
+  const _TelegramNativeCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final on = ref.watch(settingsProvider.select((s) => s.telegramNative));
+    final calls =
+        ref.watch(settingsProvider.select((s) => s.telegramNativeCalls));
+    final st = ref.watch(telegramNativeProvider);
+    final elevated = ref.watch(isElevatedProvider).value ?? false;
+    final faint = scheme.onSurface.withValues(alpha: AppTheme.alphaSecondary);
+
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Material(
+        color: Colors.transparent,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InkWell(
+              onTap: () =>
+                  ref.read(settingsProvider.notifier).setTelegramNative(!on),
+              borderRadius: BorderRadius.circular(AppTheme.rButton),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                child: Row(children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(l.tgNativeTitle),
+                        const SizedBox(height: 3),
+                        Text(l.tgNativeDesc,
+                            style: TextStyle(
+                                fontSize: AppTheme.tsCaption, color: faint)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  GlassSwitch(
+                      value: on,
+                      onChanged: (v) => ref
+                          .read(settingsProvider.notifier)
+                          .setTelegramNative(v)),
+                ]),
+              ),
+            ),
+            if (on) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: st.capturing
+                    ? _tgLine(Icons.sync, faint, l.tgNativeCapturing)
+                    : st.proxyLink != null
+                        ? _tgLine(Icons.check_circle, scheme.primary,
+                            l.tgNativeRunning)
+                        : st.failed
+                            ? _tgLine(Icons.error_outline, AppTheme.warning,
+                                l.tgNativeUnavailable)
+                            : _tgLine(Icons.sync, faint, l.tgWsChecking),
+              ),
+              // The tg:// link adds the local MTProxy to Telegram in one tap.
+              if (st.proxyLink != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: TgButton(
+                      label: l.tgNativeOpenInTg,
+                      icon: Icons.open_in_new_rounded,
+                      onPressed: () => ref
+                          .read(telegramNativeProvider.notifier)
+                          .openInTelegram(),
+                    ),
+                  ),
+                ),
+              // Calls sub-toggle (WinDivert STUN-desync — needs admin). Gated on
+              // elevation: the controller strips -calls when not elevated, so a
+              // green toggle would be a silent no-op. Disable + show why instead.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                child: Row(children: [
+                  Expanded(
+                    child: Text(l.tgNativeCalls,
+                        style: TextStyle(
+                            fontSize: AppTheme.tsLabel, color: faint)),
+                  ),
+                  GlassSwitch(
+                      value: calls && elevated,
+                      onChanged: elevated
+                          ? (v) => ref
+                              .read(settingsProvider.notifier)
+                              .setTelegramNativeCalls(v)
+                          : null),
+                ]),
+              ),
+              if (!elevated)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  child: Row(children: [
+                    const Icon(Icons.shield_outlined,
+                        size: 13, color: AppTheme.warning),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(l.desyncNeedsAdmin,
+                          style: const TextStyle(
+                              fontSize: AppTheme.tsCaption,
+                              color: AppTheme.warning)),
+                    ),
+                    GlassButton(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      onPressed: () => NativeAdmin.relaunchElevated(),
+                      child: Text(l.restartAsAdmin,
+                          style: const TextStyle(fontSize: AppTheme.tsLabel)),
+                    ),
+                  ]),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: GlassButton(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    onPressed: st.capturing
+                        ? null
+                        : () => ref
+                            .read(telegramNativeProvider.notifier)
+                            .recapture(),
+                    child: Text(l.tgNativeSetupFp,
+                        style: const TextStyle(fontSize: AppTheme.tsLabel)),
+                  ),
+                ),
+              ),
+              if (st.log.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: Container(
+                    width: double.infinity,
+                    constraints: const BoxConstraints(maxHeight: 120),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.22),
+                      borderRadius: BorderRadius.circular(AppTheme.rChip),
+                    ),
+                    child: SingleChildScrollView(
+                      reverse: true,
+                      child: Text(
+                        st.log.length > 8
+                            ? st.log.sublist(st.log.length - 8).join('\n')
+                            : st.log.join('\n'),
+                        style: const TextStyle(
+                            fontFamily: 'Consolas', fontSize: 10),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tgLine(IconData icon, Color color, String text) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 6),
+          Flexible(
+              child: Text(text,
+                  style:
+                      TextStyle(fontSize: AppTheme.tsCaption, color: color))),
         ],
       );
 }
@@ -941,7 +1154,8 @@ class _CustomDnsCardState extends ConsumerState<_CustomDnsCard> {
         children: [
           Text(
             l.dnsTitle,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+                fontSize: AppTheme.tsBody, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
           Text(
@@ -987,9 +1201,10 @@ class _CustomDnsCardState extends ConsumerState<_CustomDnsCard> {
           Text(
             l.dnsApplyHint,
             style: TextStyle(
-                fontSize: 10.5,
+                fontSize: AppTheme.tsCaption,
                 fontStyle: FontStyle.italic,
-                color: scheme.onSurface.withValues(alpha: 0.45)),
+                color: scheme.onSurface
+                    .withValues(alpha: AppTheme.alphaSecondary)),
           ),
         ],
       ),
@@ -1044,7 +1259,8 @@ class _Hysteria2CardState extends ConsumerState<_Hysteria2Card> {
         children: [
           Text(
             l.brutalTitle,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+                fontSize: AppTheme.tsBody, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
           Text(
@@ -1116,6 +1332,7 @@ class _SplitTunnelCardState extends ConsumerState<_SplitTunnelCard> {
     'Firefox': 'firefox.exe',
     'Brave': 'brave.exe',
     'Discord': 'Discord.exe',
+    'Claude': 'Claude.exe', // Electron + QUIC API traffic the TCP system-proxy drops
     'Steam': 'steam.exe',
     'Spotify': 'Spotify.exe',
   };
@@ -1162,7 +1379,7 @@ class _SplitTunnelCardState extends ConsumerState<_SplitTunnelCard> {
     final tunMode =
         ref.watch(settingsProvider.select((s) => s.vpnMode)) == VpnMode.tun;
     final notifier = ref.read(settingsProvider.notifier);
-    const amber = Color(0xFFE0A53D);
+    const amber = AppTheme.warning;
     return GlassCard(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Column(
@@ -1170,7 +1387,8 @@ class _SplitTunnelCardState extends ConsumerState<_SplitTunnelCard> {
         children: [
           Text(
             l.splitTunnelTitle,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+                fontSize: AppTheme.tsBody, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
           Text(
@@ -1313,8 +1531,9 @@ class _SplitTunnelCardState extends ConsumerState<_SplitTunnelCard> {
           const SizedBox(height: 8),
           Text(l.splitCommonApps,
               style: TextStyle(
-                  fontSize: 10.5,
-                  color: scheme.onSurface.withValues(alpha: 0.45))),
+                  fontSize: AppTheme.tsCaption,
+                  color: scheme.onSurface
+                      .withValues(alpha: AppTheme.alphaSecondary))),
           const SizedBox(height: 6),
           Wrap(
             spacing: 6,
@@ -1371,7 +1590,7 @@ class _SplitTunnelCardState extends ConsumerState<_SplitTunnelCard> {
         const SizedBox(width: 3),
         InkWell(
           onTap: onRemove,
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(AppTheme.rButton),
           child: Icon(
             Icons.close_rounded,
             size: 15,
@@ -1407,7 +1626,7 @@ class _CustomRulesCardState extends ConsumerState<_CustomRulesCard> {
 
   Color _actionColor(RuleAction a, ColorScheme scheme) => switch (a) {
         RuleAction.proxy => scheme.primary,
-        RuleAction.direct => const Color(0xFFE0A53D),
+        RuleAction.direct => AppTheme.warning,
         RuleAction.block => scheme.error,
       };
 
@@ -1455,8 +1674,8 @@ class _CustomRulesCardState extends ConsumerState<_CustomRulesCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(l.customRulesTitle,
-              style:
-                  const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              style: const TextStyle(
+                  fontSize: AppTheme.tsBody, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Text(
             l.customRulesDesc,
@@ -1467,9 +1686,10 @@ class _CustomRulesCardState extends ConsumerState<_CustomRulesCard> {
           Text(
             l.customRulesLiveNote,
             style: TextStyle(
-                fontSize: 10.5,
+                fontSize: AppTheme.tsCaption,
                 fontStyle: FontStyle.italic,
-                color: scheme.onSurface.withValues(alpha: 0.45)),
+                color: scheme.onSurface
+                    .withValues(alpha: AppTheme.alphaSecondary)),
           ),
           const SizedBox(height: 12),
           if (rules.isEmpty)
@@ -1492,18 +1712,12 @@ class _CustomRulesCardState extends ConsumerState<_CustomRulesCard> {
           const SizedBox(height: 12),
           // Field selector — a segmented control matching the action selector
           // below + the rest of the app (the default DropdownButton wasn't ours).
-          SizedBox(
-            width: double.infinity,
-            child: SegmentedButton<RuleField>(
-              showSelectedIcon: false,
-              style: _segStyle(scheme, fontSize: 11.5, compact: true),
-              segments: [
-                for (final f in RuleField.values)
-                  ButtonSegment(value: f, label: Text(_fieldLabel(f, l))),
-              ],
-              selected: {_field},
-              onSelectionChanged: (s) => setState(() => _field = s.first),
-            ),
+          GlassSegmented<RuleField>(
+            height: 40,
+            value: _field,
+            segments: RuleField.values,
+            labelOf: (f) => _fieldLabel(f, l),
+            onChanged: (v) => setState(() => _field = v),
           ),
           const SizedBox(height: 10),
           TextField(
@@ -1578,7 +1792,7 @@ class _CustomRulesCardState extends ConsumerState<_CustomRulesCard> {
           const SizedBox(width: 3),
           InkWell(
             onTap: onRemove,
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(AppTheme.rButton),
             child: Icon(Icons.close_rounded,
                 size: 15, color: scheme.onSurface.withValues(alpha: 0.6)),
           ),
@@ -1616,10 +1830,10 @@ class _WebDavCardState extends ConsumerState<_WebDavCard> {
 
   @override
   void dispose() {
-    // Persist ONCE on leave instead of on every keystroke — the password is
-    // plaintext on disk, so per-character writes were needless churn. Backup /
-    // restore already _persist() before acting, so credentials are never lost.
-    _persist();
+    // NEVER mutate a provider from dispose() — modifying settingsProvider during
+    // teardown is a use-after-dispose crash risk. Credentials are committed on
+    // focus loss (_commitOnBlur) and again before backup/restore (_persist), so
+    // nothing is lost without writing the plaintext password on every leave.
     _url.dispose();
     _user.dispose();
     _pass.dispose();
@@ -1631,6 +1845,13 @@ class _WebDavCardState extends ConsumerState<_WebDavCard> {
         user: _user.text,
         pass: _pass.text,
       );
+
+  // Focus-loss commit: persist only when the field group loses focus (not on
+  // every keystroke, not from dispose()). Guarded by mounted so a teardown that
+  // races the focus event can't touch the provider after disposal.
+  void _commitOnBlur(bool hasFocus) {
+    if (!hasFocus && mounted) _persist();
+  }
 
   Future<void> _backup() async {
     _persist();
@@ -1683,36 +1904,48 @@ class _WebDavCardState extends ConsumerState<_WebDavCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(l.webdavTitle,
-              style:
-                  const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              style: const TextStyle(
+                  fontSize: AppTheme.tsBody, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Text(l.webdavDesc,
               style: TextStyle(
                   fontSize: 11, color: scheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 12),
-          TextField(
-            controller: _url,
-            decoration: glassInputDecoration(context, l.webdavUrlHint),
-            keyboardType: TextInputType.url,
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _user,
-                  decoration: glassInputDecoration(context, l.webdavUserLabel),
+          // Commit credentials when this field group loses focus — replaces the
+          // unsafe persist-from-dispose() that mutated the provider on teardown.
+          Focus(
+            onFocusChange: _commitOnBlur,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _url,
+                  decoration: glassInputDecoration(context, l.webdavUrlHint),
+                  keyboardType: TextInputType.url,
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _pass,
-                  obscureText: true,
-                  decoration: glassInputDecoration(context, l.webdavPassLabel),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _user,
+                        decoration:
+                            glassInputDecoration(context, l.webdavUserLabel),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _pass,
+                        obscureText: true,
+                        decoration:
+                            glassInputDecoration(context, l.webdavPassLabel),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 12),
           Row(
@@ -1825,7 +2058,8 @@ class _AdvancedCardState extends ConsumerState<_AdvancedCard> {
                       children: [
                         Text(l.advancedTitle,
                             style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                                fontSize: AppTheme.tsBody,
+                                fontWeight: FontWeight.w600)),
                         const SizedBox(height: 2),
                         Text(l.advancedDesc,
                             style: TextStyle(fontSize: 11, color: dim)),
@@ -1859,21 +2093,29 @@ class _AdvancedCardState extends ConsumerState<_AdvancedCard> {
                     ),
                     hint: tunMode ? null : l.tunOnlyHint),
                 const SizedBox(height: 12),
-                _knob(context, l.muxProtoTitle, '',
-                    GlassDropdown<String>(
-                      value: s.muxProtocol,
-                      items: muxProtocols,
-                      onChanged: notifier.setMuxProtocol,
-                    )),
-                const SizedBox(height: 8),
+                // Mux carrier + padding only matter when Multiplex is on (it's a
+                // toggle up in "Connection behaviour"); hide them otherwise so
+                // they're not dead controls. mptcp/ech/tfo stand alone below.
+                if (s.mux) ...[
+                  _knob(context, l.muxProtoTitle, '',
+                      GlassDropdown<String>(
+                        value: s.muxProtocol,
+                        items: muxProtocols,
+                        onChanged: notifier.setMuxProtocol,
+                      )),
+                  const SizedBox(height: 8),
+                  _switchGroup([
+                    _switchTile(
+                      scheme: scheme,
+                      title: l.muxPaddingTitle,
+                      desc: l.muxPaddingDesc,
+                      value: s.muxPadding,
+                      onChanged: notifier.setMuxPadding,
+                    ),
+                  ]),
+                  const SizedBox(height: 12),
+                ],
                 _switchGroup([
-                  _switchTile(
-                    scheme: scheme,
-                    title: l.muxPaddingTitle,
-                    desc: l.muxPaddingDesc,
-                    value: s.muxPadding,
-                    onChanged: notifier.setMuxPadding,
-                  ),
                   _switchTile(
                     scheme: scheme,
                     title: l.echTitle,
@@ -1956,12 +2198,13 @@ class _AdvancedCardState extends ConsumerState<_AdvancedCard> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.info_outline, size: 13, color: Color(0xFFE0A53D)),
+              const Icon(Icons.info_outline,
+                  size: 13, color: AppTheme.warning),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(hint,
                     style:
-                        const TextStyle(fontSize: 11, color: Color(0xFFE0A53D))),
+                        const TextStyle(fontSize: 11, color: AppTheme.warning)),
               ),
             ],
           ),

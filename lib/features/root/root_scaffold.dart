@@ -6,10 +6,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/theme.dart';
 import '../../core/app_settings.dart';
 import '../../core/core_controller.dart';
 import '../../core/deeplink.dart';
 import '../../core/native_admin.dart';
+import '../../core/profiles_controller.dart';
+import '../../core/telegram_native_provider.dart';
 import '../../l10n/app_localizations.dart';
 import '../../widgets/glass.dart';
 import '../activity/activity_page.dart';
@@ -28,6 +31,9 @@ class RootScaffold extends ConsumerStatefulWidget {
 
 class _RootScaffoldState extends ConsumerState<RootScaffold> {
   static const _dropChannel = MethodChannel('app/files');
+  // Held as a field so dispose() can null out its handler — a const-channel
+  // closure left set keeps firing into a disposed State (stale ref/context).
+  static const _systemChannel = MethodChannel('app/system');
   int _index = 0;
   OverlayEntry? _dragEntry;
   // Synchronous re-entrancy latch for the deferred first-run chooser. seenSetup is
@@ -48,8 +54,23 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
     _dragEntry = null;
   }
 
+  // Admin mode (Windows UIPI) blocks the OLE drag-enter event, so there's no
+  // hover overlay there — flash it on the DROP itself so the user still gets
+  // visual feedback that the file registered. No-op when not elevated (the live
+  // hover overlay already fired on drag-enter).
+  Future<void> _flashDropIfElevated() async {
+    if (ref.read(isElevatedProvider).value != true) return;
+    _showDragOverlay();
+    await Future.delayed(const Duration(milliseconds: 450));
+    _hideDragOverlay();
+  }
+
   @override
   void dispose() {
+    // Tear down the native channel handlers so their async closures can't run
+    // against this disposed State (stale context/ref).
+    _dropChannel.setMethodCallHandler(null);
+    _systemChannel.setMethodCallHandler(null);
     _hideDragOverlay();
     super.dispose();
   }
@@ -57,10 +78,15 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
   @override
   void initState() {
     super.initState();
+    // Instantiate the native Telegram controller at startup (keep-alive Notifier)
+    // so a persisted `telegramNative:true` auto-starts the local MTProxy (tgcore)
+    // on relaunch.
+    ref.read(telegramNativeProvider);
     _dropChannel.setMethodCallHandler((call) async {
       switch (call.method) {
         case 'onFile':
           _hideDragOverlay();
+          await _flashDropIfElevated(); // admin: flash the overlay on the drop
           if (mounted) {
             // A dropped / "Open with" file is an EXTERNAL source — preview-gate.
             await importFromFile(context, ref, call.arguments as String,
@@ -68,6 +94,7 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
           }
         case 'onContent':
           _hideDragOverlay();
+          await _flashDropIfElevated(); // admin: flash the overlay on the drop
           if (mounted) {
             await importDroppedContent(
                 context, ref, call.arguments as List<int>,
@@ -81,14 +108,16 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
       return null;
     });
     // Native network-change events -> seamless reconnect.
-    const MethodChannel('app/system').setMethodCallHandler((call) async {
+    _systemChannel.setMethodCallHandler((call) async {
       switch (call.method) {
+        case 'trayToggle':
+          await _handleTrayToggle();
         case 'networkChanged':
           ref.read(coreControllerProvider.notifier).onNetworkChanged();
         case 'resumed':
           ref.read(coreControllerProvider.notifier).onResumed();
           // Window regained focus — the user may have just copied a server link.
-          peekClipboardForImport(ref);
+          if (mounted) peekClipboardForImport(ref);
         case 'deeplink':
           // Warm-start: a second instance forwarded a clicked link/file (native
           // WM_COPYDATA). Same untrusted path as a cold-launch deeplink.
@@ -98,7 +127,17 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
             // File ONLY when the payload IS an existing file ("Open with") —
             // an unwrapped opaque blob (base64 subscription) has no '://' either
             // and must go down the CONTENT path, not File().readAsBytes().
-            if (!p.contains('://') && File(p).existsSync()) {
+            // A raw external payload can be a malformed path (illegal chars on
+            // Windows) — existsSync() can THROW, so default to the content path.
+            bool isFile = false;
+            if (!p.contains('://')) {
+              try {
+                isFile = File(p).existsSync();
+              } catch (_) {
+                isFile = false;
+              }
+            }
+            if (isFile) {
               await importFromFile(context, ref, p, trusted: false);
             } else {
               await importDroppedContent(context, ref, utf8.encode(p),
@@ -139,10 +178,128 @@ class _RootScaffoldState extends ConsumerState<RootScaffold> {
         if (mounted) peekClipboardForImport(ref);
       });
     }
+    // Seed the tray menu label + tooltip once the first frame + l10n are ready
+    // (the ref.listen below only fires on subsequent changes; prev==null skips
+    // the launch balloon).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _pushTrayLabels();
+      _pushTrayState(null, ref.read(coreControllerProvider));
+    });
+  }
+
+  // Tray "Connect/Disconnect": toggle on the spot — never pop the window or ask
+  // for a normal node. The ONE exception is the H5 safety gate: an insecure
+  // (cert-unvalidated, MITM-able) node the user has NEVER confirmed in-app must
+  // not be silently connected from the tray. We don't pop a dialog (the user
+  // dislikes that on the tray) — we refuse with a balloon so the one-time consent
+  // is given in-app; every safe / already-confirmed node connects instantly.
+  Future<void> _handleTrayToggle() async {
+    final core = ref.read(coreControllerProvider);
+    if (!core.isOn) {
+      final p = ref.read(profilesProvider);
+      // Resolve the SAME node start() will connect: selectedNode falls back to
+      // nodes.first when `selected` is null/stale (profiles_controller). The old
+      // manual tag loop had no such fallback, so a dangling selection left `sel`
+      // null and the H5 gate below was skipped while start() still connected the
+      // (possibly insecure) first node — a consent bypass.
+      final sel = p.selectedNode;
+      final accepted = ref.read(settingsProvider).insecureAccepted;
+      // Consent is stored under insecureKey (content hash) EVERYWHERE else
+      // (connect_button, profiles_sheet, activity_page) — never the display tag.
+      // Keying off sel.tag made this gate always-false → an already-consented
+      // insecure node could never be connected from the tray.
+      if (sel != null && sel.insecure && !accepted.contains(sel.insecureKey)) {
+        // Surface the window so the one-time in-app consent is actually reachable
+        // — a balloon alone leaves a tray-hidden user with nowhere to confirm.
+        await NativeAdmin.showWindow();
+        if (mounted) {
+          final l = AppLocalizations.of(context);
+          await NativeAdmin.showTrayNotification(
+              title: l.trayConnect, message: l.trayInsecureHint);
+        }
+        return;
+      }
+    }
+    try {
+      await ref.read(coreControllerProvider.notifier).toggle();
+    } catch (_) {}
+  }
+
+  // Push the localized, state-aware tray labels to the native menu.
+  void _pushTrayLabels() {
+    if (!mounted) return;
+    final l = AppLocalizations.of(context);
+    final status = ref.read(coreControllerProvider).status;
+    final isOn =
+        status == CoreStatus.running || status == CoreStatus.starting;
+    NativeAdmin.setTrayLabels(
+      toggle: isOn ? l.trayDisconnect : l.trayConnect,
+      show: l.trayShow,
+      quit: l.trayQuit,
+    );
+  }
+
+  // Make the tray INFORMATIVE: keep the icon tooltip on the live state, and pop a
+  // balloon on a real status change (connected / disconnected / error with the
+  // core's detail) — the only feedback when you act from the tray with the window
+  // hidden. The native side suppresses the balloon while the window is visible.
+  void _pushTrayState(CoreState? prev, CoreState next) {
+    if (!mounted) return;
+    final l = AppLocalizations.of(context);
+    final label = switch (next.status) {
+      CoreStatus.running => l.statusConnected,
+      CoreStatus.starting => l.statusConnecting,
+      CoreStatus.stopping => l.statusDisconnecting,
+      CoreStatus.error => l.statusError,
+      CoreStatus.stopped => l.statusDisconnected,
+    };
+    // Show the live in-tunnel ping next to "Connected" so a hidden-to-tray user
+    // sees state + latency at a glance (re-pushed on each ping tick by the
+    // latencyProvider listener in build()).
+    final ms = next.status == CoreStatus.running
+        ? ref.read(latencyProvider).value
+        : null;
+    NativeAdmin.setTrayTooltip(
+        '${l.appTitle} — $label${ms != null ? ' · $ms ms' : ''}');
+    // No balloon on the initial seed (prev == null) or when status didn't change.
+    if (prev == null || prev.status == next.status) return;
+    switch (next.status) {
+      case CoreStatus.running:
+        NativeAdmin.showTrayNotification(
+            title: l.appTitle, message: l.statusConnected);
+      case CoreStatus.error:
+        final d = next.detail?.trim();
+        NativeAdmin.showTrayNotification(
+            title: l.appTitle,
+            message: (d != null && d.isNotEmpty) ? d : l.statusError);
+      case CoreStatus.stopped:
+        NativeAdmin.showTrayNotification(
+            title: l.appTitle, message: l.statusDisconnected);
+      case CoreStatus.starting:
+      case CoreStatus.stopping:
+        break; // transient — the tooltip is enough, no balloon spam
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Keep the tray live: on a real status change, refresh the menu label AND the
+    // tooltip + balloon (so a tray-initiated connect/disconnect/error is never
+    // silent). Locale change re-pushes the labels.
+    ref.listen(coreControllerProvider, (prev, next) {
+      if (prev?.status == next.status) return;
+      _pushTrayLabels();
+      _pushTrayState(prev, next);
+    });
+    // Keep the tray tooltip's live ping fresh while connected: the status doesn't
+    // change but the latency ticks — re-push the tooltip (same status → no balloon).
+    ref.listen(latencyProvider, (_, _) {
+      final s = ref.read(coreControllerProvider);
+      if (s.status == CoreStatus.running) _pushTrayState(s, s);
+    });
+    ref.listen(settingsProvider.select((s) => s.localeCode),
+        (_, _) => _pushTrayLabels());
     // Deferred first-run: offer the TUN-vs-proxy upgrade AFTER the first successful
     // connect (not before the user even has a server). One-time — completeSetup()
     // flips seenSetup so it never re-fires.
@@ -249,9 +406,11 @@ class _DragOverlay extends StatelessWidget {
                     padding: const EdgeInsets.all(22),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: scheme.primary.withValues(alpha: 0.18),
+                      // Match the PageHeader chip alphas (0.14 fill / 0.30 border)
+                      // so the drag badge reads as the same designed accent.
+                      color: scheme.primary.withValues(alpha: 0.14),
                       border: Border.all(
-                          color: scheme.primary.withValues(alpha: 0.5)),
+                          color: scheme.primary.withValues(alpha: 0.30)),
                     ),
                     child: Icon(Icons.file_download_rounded,
                         size: 52, color: scheme.primary),
@@ -260,7 +419,7 @@ class _DragOverlay extends StatelessWidget {
                   Text(
                     l.dropToImport,
                     style: TextStyle(
-                        fontSize: 17,
+                        fontSize: AppTheme.tsHeading,
                         fontWeight: FontWeight.w600,
                         color: scheme.onSurface,
                         decoration: TextDecoration.none),
@@ -390,7 +549,8 @@ class _GlassNavState extends State<_GlassNav> {
                               child: DecoratedBox(
                                 decoration: BoxDecoration(
                                   color: scheme.primary.withValues(alpha: 0.22),
-                                  borderRadius: BorderRadius.circular(22),
+                                  borderRadius:
+                                      BorderRadius.circular(AppTheme.rCard),
                                   border: Border.all(
                                       color: scheme.primary
                                           .withValues(alpha: 0.45)),
@@ -406,21 +566,40 @@ class _GlassNavState extends State<_GlassNav> {
                           final color = selected
                               ? scheme.primary
                               : scheme.onSurface.withValues(alpha: 0.55);
+                          // Per-tab semantics: each tab announces as a selectable
+                          // button with its localized label + selected state, and
+                          // exposes a tap action to assistive tech (the parent
+                          // GestureDetector still owns the real tap/drag routing).
+                          // excludeSemantics avoids double-announcing the visual
+                          // label below.
                           return Expanded(
-                            child: IgnorePointer(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(_icons[i], size: 22, color: color),
-                                  const SizedBox(height: 2),
-                                  Text(labels[i],
-                                      style: TextStyle(
-                                          fontSize: 10.5,
-                                          color: color,
-                                          fontWeight: selected
-                                              ? FontWeight.w700
-                                              : FontWeight.w500)),
-                                ],
+                            child: Semantics(
+                              button: true,
+                              selected: selected,
+                              label: labels[i],
+                              excludeSemantics: true,
+                              onTap: () => widget.onTap(i),
+                              child: IgnorePointer(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(_icons[i], size: 22, color: color),
+                                    const SizedBox(height: 2),
+                                    Text(labels[i],
+                                        maxLines: 1,
+                                        softWrap: false,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                            fontSize: AppTheme.tsLabel,
+                                            color: selected
+                                                ? color
+                                                : scheme.onSurface.withValues(
+                                                    alpha: 0.70),
+                                            fontWeight: selected
+                                                ? FontWeight.w700
+                                                : FontWeight.w500)),
+                                  ],
+                                ),
                               ),
                             ),
                           );

@@ -32,6 +32,9 @@ class ProfileStore {
       String? selected,
       Map<String, SubInfo> subInfo
     }) empty = (nodes: <ParsedNode>[], selected: null, subInfo: const {});
+    // Promote a half-written `.tmp` (a previous atomicWrite blocked mid-rename)
+    // before reading, so a locked-file save of profiles isn't silently lost.
+    CorePaths.recoverOrphanTmp(_file.path);
     var main = empty;
     try {
       final f = _file;

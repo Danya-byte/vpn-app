@@ -41,6 +41,7 @@ class CorePaths {
   /// write (which opens with sharing and usually succeeds).
   static void atomicWrite(String path, String text) {
     final tmp = File('$path.tmp');
+    var tmpOk = false;
     try {
       final raf = tmp.openSync(mode: FileMode.write);
       try {
@@ -49,14 +50,64 @@ class CorePaths {
       } finally {
         raf.closeSync();
       }
+      tmpOk = true;
       tmp.renameSync(path); // atomic on NTFS
       return;
     } catch (_) {
-      // temp write or rename failed (e.g. target locked) — fall through.
+      // Rename failed (target locked by AV/indexer). Fall through — but if the
+      // temp already holds the good copy, recover FROM it instead of re-writing
+      // the live file from `text`: a crash mid-rewrite would truncate the live
+      // store even though a perfect temp exists.
     }
-    File(path).writeAsStringSync(text); // non-atomic fallback, never silent-loss
+    try {
+      if (tmpOk) {
+        tmp.copySync(path); // copy the known-good temp (opens with sharing)
+      } else {
+        File(path).writeAsStringSync(text); // temp never got written; last resort
+      }
+    } catch (_) {
+      // Even the copy/in-place write failed mid-flight. Leave the intact `.tmp`
+      // in place as a recovery source rather than deleting it — a readable stale
+      // temp beats a truncated live file.
+      return;
+    }
     try {
       if (tmp.existsSync()) tmp.deleteSync();
+    } catch (_) {}
+  }
+
+  /// Append a spawned core's PID to the shared ledger the orphan-reaper reads
+  /// (the native KillCoreOrphans on quit + the Dart sweep on next launch), so a
+  /// core WE started can't outlive the app. [image] is the exe basename (e.g.
+  /// 'tgcore.exe'); the reaper verifies it against the live process before
+  /// killing, guarding PID reuse. Only call for processes we SPAWNED (never an
+  /// adopted external one — we must not kill the user's own standalone).
+  static void recordPid(String image, int pid) {
+    try {
+      File('${runtimeDir().path}${Platform.pathSeparator}core.pids')
+          .writeAsStringSync('$image\t$pid\n', mode: FileMode.append);
+    } catch (_) {}
+  }
+
+  /// Recover a stranded [atomicWrite]: if a prior write half-failed (rename AND
+  /// copy both blocked by AV/indexer) it left the good content in `$path.tmp`
+  /// and a stale/missing live file that NOTHING reads on startup. Promote the
+  /// tmp ONLY when it is STRICTLY newer than the live file, so the user's last
+  /// change isn't silently lost. Best-effort; call BEFORE reading the live file.
+  static void recoverOrphanTmp(String path) {
+    try {
+      final tmp = File('$path.tmp');
+      if (!tmp.existsSync()) return;
+      final live = File(path);
+      // Keep the live file unless the tmp is STRICTLY newer. On a coarse-mtime FS
+      // (FAT/exFAT, 2s granularity) the tmp can share the live file's timestamp
+      // after a same-second copy whose delete failed — promoting it then would
+      // resurrect genuinely older, superseded content over the current file.
+      if (live.existsSync() &&
+          !live.lastModifiedSync().isBefore(tmp.lastModifiedSync())) {
+        return;
+      }
+      tmp.copySync(path); // half-failed write OR missing live → promote the tmp
     } catch (_) {}
   }
 
@@ -74,6 +125,12 @@ class CorePaths {
   /// xray. Present + admin → [CoreController._spawnDesyncEngine] runs the
   /// server-less TLS-DPI bypass. (WinDivert.dll / WinDivert64.sys live beside it.)
   static String winws() => _resolveBinary('winws.exe');
+
+  /// The native Telegram core (tgcore.exe) — a local MTProxy that bridges
+  /// MTProto to Telegram's un-throttled web gateway over uTLS-masked WebSocket
+  /// (the serverless media/text unblock). Optional WinDivert call-desync reuses
+  /// the winws WinDivert.dll/.sys that live in the same folder.
+  static String tgCore() => _resolveBinary('tgcore.exe');
 
   /// Absolute path to the bundled rule-sets dir (geoip-ru.srs, …). Bundled
   /// locally so startup never blocks on a (RF-blocked) github download.

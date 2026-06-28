@@ -51,6 +51,12 @@ foreach ($c in @('sing-box.exe', 'xray.exe', 'winws.exe', 'WinDivert64.sys', 'qu
     throw "Release core '$c' missing - run: pwsh tool/fetch-cores.ps1 -IncludeXray -IncludeDesync"
   }
 }
+# tgcore.exe (native server-less Telegram) is NOT fetched - it is committed to the
+# repo (source: github.com/Danya-byte/tg-core), so a checkout always has it. Guard
+# it like the others: a missing one = a release silently without native Telegram.
+if (-not (Test-Path (Join-Path $coreSrc 'tgcore.exe'))) {
+  throw "Release core 'tgcore.exe' missing - it is committed at core/windows/tgcore.exe; restore it from git or rebuild from github.com/Danya-byte/tg-core."
+}
 $coreDst = Join-Path $rel 'core\windows'
 New-Item -ItemType Directory -Force -Path $coreDst | Out-Null
 Copy-Item -Path (Join-Path $coreSrc '*') -Destination $coreDst -Recurse -Force

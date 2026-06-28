@@ -6,10 +6,12 @@
     xray.exe      sub-engine for transports sing-box lacks (XHTTP/SplitHTTP/mKCP)
     winws.exe     zapret WinDivert desync sidecar - server-less TLS-DPI bypass
                   (+ cygwin1.dll, WinDivert.dll, WinDivert64.sys runtime files)
+    awg.exe       wireproxy-awg userspace bridge - exposes an AmneziaWG peer as a
+                  local SOCKS5 so sing-box can ride AmneziaWG (jc/jmin/s1-s4 obfs)
 
   These binaries are git-ignored (large, redistributable). Run this to (re)populate:
     pwsh tool\fetch-cores.ps1            # sing-box + wintun + rule-sets
-    pwsh tool\fetch-cores.ps1 -IncludeXray -IncludeDesync
+    pwsh tool\fetch-cores.ps1 -IncludeXray -IncludeDesync -IncludeAmnezia
 
   SUPPLY-CHAIN: the binaries are pinned to an exact version AND verified against a
   known SHA-256 (the exact bytes that pass `tool/verify_store.dart` and carry
@@ -21,7 +23,8 @@
 param(
   [string]$Dest = (Join-Path $PSScriptRoot '..\core\windows'),
   [switch]$IncludeXray,
-  [switch]$IncludeDesync
+  [switch]$IncludeDesync,
+  [switch]$IncludeAmnezia
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -71,6 +74,19 @@ $Desync = @{
   QuicDst = 'quic_initial.bin'
   QuicSha = 'f4589c57749f956bb30538197a521d7005f8b0a8723b4707e72405e51ddac50a'
 }
+# wireproxy-awg: an AmneziaWG-capable WireGuard userspace client that exposes a
+# local SOCKS5 (the [Socks5] INI AmneziaConfig emits). THIRD-PARTY FORK (not an
+# Amnezia vendor), pinned to an exact tag + the EXTRACTED exe's SHA-256. Absent ->
+# AmneziaWG stays detect-and-fail (CoreController gates _bridgeAmnezia on this file).
+# The asset is a .tar.gz (extracted via tar, not Expand-Archive); inside is a single
+# wireproxy.exe, installed under our name awg.exe.
+$Awg = @{
+  Ver  = 'v1.0.13'
+  Repo = 'artem-russkikh/wireproxy-awg'
+  Tar  = 'wireproxy_windows_amd64.tar.gz'
+  Exe  = 'awg.exe'
+  Sha  = 'ea51cc76bdc82ef4b0e896342f56252278985579075c6eb49bd4bd83a45576fa'
+}
 
 function Fetch($url, $name) {
   $p = Join-Path $env:TEMP $name
@@ -81,6 +97,15 @@ function Expand-Temp($zip, $tag) {
   $out = Join-Path $env:TEMP "core_$tag"
   Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
   Expand-Archive $zip $out -Force
+  $out
+}
+# .tar.gz (Windows 10+ ships bsdtar as `tar`). Expand-Archive only handles .zip.
+function Expand-TarGz($tgz, $tag) {
+  $out = Join-Path $env:TEMP "core_$tag"
+  Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force $out | Out-Null
+  tar -xzf $tgz -C $out
+  if ($LASTEXITCODE -ne 0) { throw "tar failed to extract $tgz" }
   $out
 }
 # Copy [src] -> [Dest\name] only if its SHA-256 matches the pin; else FAIL HARD.
@@ -173,6 +198,18 @@ if ($IncludeDesync) {
   Write-Host "zapret winws $($Desync.Ver)"
 } else {
   Write-Host "zapret winws skipped (pass -IncludeDesync to fetch)"
+}
+
+# --- wireproxy-awg (AmneziaWG userspace bridge -> local SOCKS5) ---
+if ($IncludeAmnezia) {
+  $awTar = Fetch (Get-PinnedAsset $Awg.Repo $Awg.Ver $Awg.Tar) $Awg.Tar
+  $awDir = Expand-TarGz $awTar 'aw'
+  $awExe = (Get-ChildItem -Recurse $awDir -Filter '*.exe' | Select-Object -First 1).FullName
+  if (-not $awExe) { throw "wireproxy-awg: no .exe found in $($Awg.Tar)" }
+  Install-Verified $awExe $Awg.Exe $Awg.Sha
+  Write-Host "wireproxy-awg $($Awg.Ver)"
+} else {
+  Write-Host "wireproxy-awg skipped (pass -IncludeAmnezia to fetch)"
 }
 
 Write-Host "`nCores in $Dest :"

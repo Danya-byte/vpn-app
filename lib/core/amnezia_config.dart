@@ -90,9 +90,21 @@ class AmneziaConfig {
       ..writeln('[Peer]')
       ..writeln('PublicKey = $pub');
     if (psk.isNotEmpty) b.writeln('PresharedKey = $psk');
+    // PersistentKeepalive: without it a bridged WG tunnel goes silent once the
+    // peer's NAT mapping times out (no app traffic → no rekey → dead tunnel).
+    // Honour the peer's interval; default to 25s (the WireGuard convention) when
+    // absent — sing-box's `persistent_keepalive_interval` is in seconds.
+    final ka = peer['persistent_keepalive_interval'];
+    final kaNum = ka is num ? ka.toInt() : int.tryParse('${ka ?? ''}');
     b
       ..writeln('Endpoint = ${_bracket(server)}:$portNum')
       ..writeln('AllowedIPs = $allowed')
+      // Honour an explicit value INCLUDING 0 (the author disabled keepalive on
+      // purpose); default to 25s only when the field is absent/unparseable.
+      // Clamp to WG's uint16 range so a huge value ("99999") can't be emitted
+      // verbatim and make wireproxy reject the whole config.
+      ..writeln(
+          'PersistentKeepalive = ${kaNum != null && kaNum >= 0 ? kaNum.clamp(0, 65535) : 25}')
       ..writeln()
       // wireproxy exposes the tunnel as a local SOCKS5 — what sing-box dials.
       ..writeln('[Socks5]')

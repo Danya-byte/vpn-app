@@ -32,6 +32,7 @@ constexpr UINT kTrayMsg = WM_APP + 101;  // tray-icon mouse callbacks
 constexpr UINT kTrayUid = 1;
 constexpr UINT kTrayShowCmd = 0xA001;  // WM_COMMAND ids for the tray menu
 constexpr UINT kTrayQuitCmd = 0xA002;
+constexpr UINT kTrayToggleCmd = 0xA003;  // connect / disconnect the VPN
 
 namespace {
 
@@ -220,9 +221,120 @@ bool IsOwnLoopback(const std::wstring& proxy) {
          proxy.find(L"[::1]:2080") != std::wstring::npos;
 }
 
+// Extract the TCP port from a SIMPLE loopback proxy value — "127.0.0.1:12334",
+// "http://127.0.0.1:2080", "localhost:8888". Returns 0 for anything that is NOT
+// a plain loopback host:port: a real upstream (a LAN/WAN host) or a structured
+// per-protocol list ("http=...;https=..."), which we must never second-guess.
+unsigned ParseLoopbackPort(const std::wstring& proxy) {
+  if (proxy.find(L'=') != std::wstring::npos ||
+      proxy.find(L';') != std::wstring::npos) {
+    return 0;  // a deliberate per-protocol list → leave the user's config alone
+  }
+  // NOT [::1]: — our liveness probe (LoopbackPortListening) reads only the IPv4
+  // listener table, so a v6-loopback proxy must be left untouched (port 0) rather
+  // than wrongly judged dead and disabled. (Our own port is caught by IsOwnLoopback.)
+  static const wchar_t* kHosts[] = {L"127.0.0.1:", L"localhost:"};
+  for (const wchar_t* host : kHosts) {
+    const size_t at = proxy.find(host);
+    if (at == std::wstring::npos) continue;
+    size_t i = at + wcslen(host);
+    unsigned port = 0;
+    bool any = false;
+    while (i < proxy.size() && proxy[i] >= L'0' && proxy[i] <= L'9') {
+      port = port * 10 + static_cast<unsigned>(proxy[i] - L'0');
+      if (port > 65535) return 0;
+      ++i;
+      any = true;
+    }
+    if (any) return port;
+  }
+  return 0;
+}
+
+// True if the proxy value is a PLAIN loopback host:port we should SUSPEND on TUN
+// connect — 127.0.0.1 / localhost / [::1]. A per-protocol list ("http=…;https=…")
+// or a real upstream host returns false. ParseLoopbackPort intentionally rejects
+// [::1] (its port feeds the IPv4-only liveness probe), but the suspend decision in
+// ClearProxyForTun does NO liveness check and must cover a v6 loopback proxy too —
+// otherwise a "[::1]:12334" proxy survives and hijacks proxy-aware apps over TUN.
+bool IsLoopbackProxy(const std::wstring& proxy) {
+  if (proxy.find(L'=') != std::wstring::npos ||
+      proxy.find(L';') != std::wstring::npos) {
+    return false;
+  }
+  return proxy.find(L"127.0.0.1:") != std::wstring::npos ||
+         proxy.find(L"localhost:") != std::wstring::npos ||
+         proxy.find(L"[::1]:") != std::wstring::npos;
+}
+
+// True if some process is LISTENING on this TCP port on loopback (or 0.0.0.0).
+// Reads the OS listener table (iphlpapi, already linked) — no connect, no
+// WinSock init — so it tells a LIVE local proxy (Fiddler / cntlm / a running
+// Hiddify) apart from a DEAD leftover (our own stopped core, or a Hiddify the
+// user has since closed).
+bool LoopbackPortListening(unsigned port) {
+  // AF_INET == 2; the literal avoids pulling <winsock2.h> in after <windows.h>
+  // (the classic header-order break) just to name one constant.
+  // Size-then-fetch in a small RETRY loop: the table can grow between the sizing
+  // call and the fetch (a new socket opens), which returns ERROR_INSUFFICIENT_-
+  // BUFFER again — re-size and retry instead of falsely reporting "not listening".
+  std::vector<BYTE> buf;
+  ULONG size = 0;
+  DWORD rc = ERROR_INSUFFICIENT_BUFFER;
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    rc = GetExtendedTcpTable(buf.empty() ? nullptr : buf.data(), &size, FALSE, 2,
+                             TCP_TABLE_BASIC_LISTENER, 0);
+    if (rc == NO_ERROR) break;
+    if (rc != ERROR_INSUFFICIENT_BUFFER || size == 0) return false;
+    buf.resize(size);
+  }
+  if (rc != NO_ERROR || buf.empty()) return false;
+  const auto* table = reinterpret_cast<const MIB_TCPTABLE*>(buf.data());
+  for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+    const MIB_TCPROW& row = table->table[i];
+    if (row.dwState != MIB_TCP_STATE_LISTEN) continue;
+    const unsigned p =
+        ((row.dwLocalPort & 0xFF) << 8) | ((row.dwLocalPort >> 8) & 0xFF);
+    if (p != port) continue;
+    if (row.dwLocalAddr == 0x0100007F /* 127.0.0.1 */ ||
+        row.dwLocalAddr == 0x00000000 /* 0.0.0.0 = any */) {
+      return true;
+    }
+  }
+  // IPv4 table only — on purpose. Scanning the v6 table needs MIB_TCP6ROW's
+  // IN6_ADDR, which drags <winsock2.h>/<ws2ipdef.h> in AFTER <windows.h> (the
+  // classic header-order break) and isn't worth it. Instead ParseLoopbackPort
+  // REFUSES a [::1] proxy, so a live v6-only third-party proxy is never tested
+  // here and so never wrongly judged dead and disabled.
+  return false;
+}
+
+// Should this proxy value be DROPPED (disabled) when we hand the system back?
+// Yes for our own port (we are tearing it down) and for any other local proxy
+// whose port is DEAD (a closed Hiddify / a stopped tool). Re-enabling a dead
+// loopback proxy strands every proxy-aware app (Chrome / Edge / Electron — the
+// Claude desktop app) on a non-serving port → ERR_PROXY_CONNECTION_FAILED /
+// ConnectionRefused. A still-live local proxy or a real upstream returns false.
+bool ShouldDropLoopbackProxy(const std::wstring& proxy) {
+  if (IsOwnLoopback(proxy)) return true;  // our own port → always drop on restore
+  const unsigned port = ParseLoopbackPort(proxy);
+  return port != 0 && !LoopbackPortListening(port);
+}
+
 void NotifyProxyChanged() {
   InternetSetOptionW(nullptr, INTERNET_OPTION_SETTINGS_CHANGED, nullptr, 0);
   InternetSetOptionW(nullptr, INTERNET_OPTION_REFRESH, nullptr, 0);
+  // The WinINET notifications above reach IE/WinINET apps but NOT Chromium-based
+  // ones (Edge, Chrome, Electron — including the Claude desktop app). Those refresh
+  // their proxy config on a WM_SETTINGCHANGE("Internet Settings") broadcast, so
+  // send it too — otherwise clearing the proxy (proxy→TUN switch / disconnect) can
+  // leave such an app stuck on the now-gone 127.0.0.1:2080 and failing with
+  // ERR_PROXY_CONNECTION_FAILED while every other app went direct. Time-bounded so
+  // a hung top-level window can't stall the proxy change.
+  DWORD_PTR res = 0;
+  SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                      reinterpret_cast<LPARAM>(L"Internet Settings"),
+                      SMTO_ABORTIFHUNG, 100, &res);
 }
 
 DWORD ReadDword(const wchar_t* sub, const wchar_t* name, DWORD def) {
@@ -362,25 +474,63 @@ bool SetSystemProxy(const std::wstring& server) {
 
 void RestoreSystemProxy() {
   if (ReadDword(kBackupKey, L"BackupValid", 0) == 1) {
-    WriteDword(kInetKey, L"ProxyEnable",
-               ReadDword(kBackupKey, L"BackupEnable", 0));
-    WriteString(kInetKey, L"ProxyServer", ReadString(kBackupKey, L"BackupServer"));
+    const std::wstring backup = ReadString(kBackupKey, L"BackupServer");
+    WriteString(kInetKey, L"ProxyServer", backup);
     WriteString(kInetKey, L"ProxyOverride",
                 ReadString(kBackupKey, L"BackupOverride"));
+    // Restore the backed-up ENABLE state — unless the backed-up proxy is a now-
+    // DEAD local port (e.g. a Hiddify the user has since closed). We faithfully
+    // back up a user's local proxy so disconnect can restore it, but re-enabling
+    // a dead one points every proxy-aware app (incl. the Claude desktop app) at a
+    // non-serving port → ConnectionRefused. A still-live local proxy is restored.
+    const DWORD enable = ReadDword(kBackupKey, L"BackupEnable", 0);
+    WriteDword(kInetKey, L"ProxyEnable",
+               (enable == 1 && ShouldDropLoopbackProxy(backup)) ? 0 : enable);
     WriteDword(kBackupKey, L"BackupValid", 0);
     NotifyProxyChanged();
     return;
   }
-  // No real backup to restore. If the system proxy still points at OUR OWN dead
-  // 127.0.0.1:2080 (we set it on connect; nothing serves it now), DISABLE it so the
-  // browser falls back to DIRECT instead of erroring on a non-serving port
-  // (ERR_PROXY_CONNECTION_FAILED). The user's own proxy — a real upstream, or a
-  // local one on another port — is never ours, so it is left untouched.
+  // No real backup to restore. If the system proxy still points at a DEAD local
+  // port — our own 127.0.0.1:2080 (we set it on connect; nothing serves it now)
+  // OR another tool's leftover (a closed Hiddify) — DISABLE it so apps fall back
+  // to DIRECT instead of erroring on a non-serving port (ERR_PROXY_CONNECTION_
+  // FAILED). A live local proxy or a real upstream is never dropped.
   if (ReadDword(kInetKey, L"ProxyEnable", 0) == 1 &&
-      IsOwnLoopback(ReadString(kInetKey, L"ProxyServer"))) {
+      ShouldDropLoopbackProxy(ReadString(kInetKey, L"ProxyServer"))) {
     WriteDword(kInetKey, L"ProxyEnable", 0);
     NotifyProxyChanged();
   }
+}
+
+// Entering TUN mode: TUN captures every app transparently, so a system proxy is
+// not merely unnecessary — a leftover LOOPBACK proxy HIJACKS proxy-aware apps
+// (Chrome / Edge / Electron — the Claude desktop app) away from TUN. Two ways it
+// bites: our own 127.0.0.1:2080 from a prior proxy-mode session, or ANOTHER local
+// VPN's proxy (e.g. Hiddify on 127.0.0.1:12334). With the latter still set, an app
+// goes app→Hiddify→(captured by our TUN)→our server — a broken double-hop — or, if
+// that tool is closed, onto a dead port (ConnectionRefused). So on TUN connect we
+// SUSPEND any loopback proxy regardless of whether it is alive: back up a user-set
+// one once (so disconnect can restore it, liveness-checked) and disable it. A real
+// upstream proxy (a LAN/WAN host, possibly required by the network) is left as-is.
+void ClearProxyForTun() {
+  if (ReadDword(kInetKey, L"ProxyEnable", 0) != 1) return;  // nothing enabled
+  const std::wstring current = ReadString(kInetKey, L"ProxyServer");
+  // Suspend ANY loopback proxy (v4 or v6); a real upstream / per-protocol list is
+  // left alone. IsLoopbackProxy (not ParseLoopbackPort) so a [::1] proxy — which
+  // ParseLoopbackPort reports as port 0 — is still suspended, not skipped.
+  if (!IsLoopbackProxy(current)) return;
+  // Back up a third-party loopback proxy once so disconnect restores it; never
+  // back up our OWN value (a stale 2080), which would re-point the user at our
+  // dead port later.
+  if (ReadDword(kBackupKey, L"BackupValid", 0) == 0 && !IsOwnLoopback(current)) {
+    WriteDword(kBackupKey, L"BackupEnable", 1);
+    WriteString(kBackupKey, L"BackupServer", current);
+    WriteString(kBackupKey, L"BackupOverride",
+                ReadString(kInetKey, L"ProxyOverride"));
+    WriteDword(kBackupKey, L"BackupValid", 1);
+  }
+  WriteDword(kInetKey, L"ProxyEnable", 0);
+  NotifyProxyChanged();
 }
 
 // Grab the whole virtual screen into an in-memory 32bpp BMP (no encoder / extra
@@ -509,7 +659,14 @@ void KillCoreOrphans() {
   wchar_t base[MAX_PATH];
   DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
   if (n == 0 || n >= MAX_PATH) return;
+  // Dev (DEBUG) builds use the run_dev store split (mirrors CorePaths._devInstance
+  // / main.cpp's dev mutex) — read the matching ledger so a dev build reaps its
+  // OWN cores on quit, not the release client's.
+#ifdef NDEBUG
   std::wstring path = std::wstring(base) + L"\\vpn_app\\run\\core.pids";
+#else
+  std::wstring path = std::wstring(base) + L"\\vpn_app\\run_dev\\core.pids";
+#endif
   HANDLE f =
       CreateFileW(path.c_str(), GENERIC_READ,
                   FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
@@ -669,6 +826,9 @@ bool FlutterWindow::OnCreate() {
         } else if (call.method_name() == "clearProxy") {
           RestoreSystemProxy();
           result->Success();
+        } else if (call.method_name() == "clearProxyForTun") {
+          ClearProxyForTun();
+          result->Success();
         } else if (call.method_name() == "fenceEngage") {
           // EVERY core that dials out (sing-box + each xray bridge) must be
           // permitted, else the fence blacks out XHTTP/Reality-over-XHTTP.
@@ -747,6 +907,62 @@ bool FlutterWindow::OnCreate() {
               close_to_tray_ = std::get<bool>(it->second);
             }
           }
+          result->Success();
+        } else if (call.method_name() == "setTrayLabels") {
+          // Dart pushes localized, state-aware labels for the tray menu.
+          if (const auto* args =
+                  std::get_if<flutter::EncodableMap>(call.arguments())) {
+            const auto it_t = args->find(flutter::EncodableValue("toggle"));
+            if (it_t != args->end() &&
+                std::holds_alternative<std::string>(it_t->second)) {
+              tray_toggle_label_ =
+                  Utf16FromUtf8(std::get<std::string>(it_t->second));
+            }
+            const auto it_s = args->find(flutter::EncodableValue("show"));
+            if (it_s != args->end() &&
+                std::holds_alternative<std::string>(it_s->second)) {
+              tray_show_label_ =
+                  Utf16FromUtf8(std::get<std::string>(it_s->second));
+            }
+            const auto it_q = args->find(flutter::EncodableValue("quit"));
+            if (it_q != args->end() &&
+                std::holds_alternative<std::string>(it_q->second)) {
+              tray_quit_label_ =
+                  Utf16FromUtf8(std::get<std::string>(it_q->second));
+            }
+          }
+          result->Success();
+        } else if (call.method_name() == "showWindow") {
+          ShowFromTray();
+          result->Success();
+        } else if (call.method_name() == "setTrayTooltip") {
+          std::string text;
+          if (const auto* args =
+                  std::get_if<flutter::EncodableMap>(call.arguments())) {
+            const auto it = args->find(flutter::EncodableValue("text"));
+            if (it != args->end() &&
+                std::holds_alternative<std::string>(it->second)) {
+              text = std::get<std::string>(it->second);
+            }
+          }
+          SetTrayTooltip(Utf16FromUtf8(text));
+          result->Success();
+        } else if (call.method_name() == "showTrayNotification") {
+          std::string title, message;
+          if (const auto* args =
+                  std::get_if<flutter::EncodableMap>(call.arguments())) {
+            const auto it_t = args->find(flutter::EncodableValue("title"));
+            if (it_t != args->end() &&
+                std::holds_alternative<std::string>(it_t->second)) {
+              title = std::get<std::string>(it_t->second);
+            }
+            const auto it_m = args->find(flutter::EncodableValue("message"));
+            if (it_m != args->end() &&
+                std::holds_alternative<std::string>(it_m->second)) {
+              message = std::get<std::string>(it_m->second);
+            }
+          }
+          ShowTrayNotification(Utf16FromUtf8(title), Utf16FromUtf8(message));
           result->Success();
         } else {
           result->NotImplemented();
@@ -850,8 +1066,48 @@ void FlutterWindow::AddTrayIcon() {
   nid.uCallbackMessage = kTrayMsg;
   nid.hIcon =
       LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
-  wcscpy_s(nid.szTip, L"vpn_app");
+  wcsncpy_s(nid.szTip, tray_tooltip_.c_str(), _TRUNCATE);
   tray_added_ = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+  if (tray_added_) {
+    // Opt into v4 so a click on a notification BALLOON delivers
+    // NIN_BALLOONUSERCLICK (never sent in legacy v3 → the "click the error
+    // balloon to open the window" affordance was dead). NOTE: v4 ALSO changes a
+    // single icon left-click from WM_LBUTTONUP to NIN_SELECT — the kTrayMsg
+    // handler matches both NIN_SELECT/NIN_KEYSELECT and the mouse messages so the
+    // icon click still restores the window.
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nid);
+  }
+}
+
+// Update the tray icon's hover tooltip (e.g. "VPN — connected").
+void FlutterWindow::SetTrayTooltip(const std::wstring& text) {
+  tray_tooltip_ = text;
+  if (!tray_added_) return;
+  NOTIFYICONDATAW nid = {};
+  nid.cbSize = sizeof(nid);
+  nid.hWnd = GetHandle();
+  nid.uID = kTrayUid;
+  nid.uFlags = NIF_TIP;
+  wcsncpy_s(nid.szTip, tray_tooltip_.c_str(), _TRUNCATE);
+  Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+// Pop a tray balloon — the ONLY feedback the user gets when they act from the
+// tray with the window hidden. Suppressed when the window is up (the in-app UI
+// already shows the state) so it doesn't double-notify.
+void FlutterWindow::ShowTrayNotification(const std::wstring& title,
+                                         const std::wstring& msg) {
+  if (!tray_added_ || IsWindowVisible(GetHandle())) return;
+  NOTIFYICONDATAW nid = {};
+  nid.cbSize = sizeof(nid);
+  nid.hWnd = GetHandle();
+  nid.uID = kTrayUid;
+  nid.uFlags = NIF_INFO;
+  wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
+  wcsncpy_s(nid.szInfo, msg.c_str(), _TRUNCATE);
+  nid.dwInfoFlags = NIIF_NONE;
+  Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 void FlutterWindow::RemoveTrayIcon() {
@@ -875,9 +1131,13 @@ void FlutterWindow::ShowTrayMenu() {
   const HWND hwnd = GetHandle();
   HMENU menu = CreatePopupMenu();
   if (!menu) return;
-  AppendMenuW(menu, MF_STRING, kTrayShowCmd, L"Show");
+  // Connect/Disconnect (label pushed from Dart, localized + state-aware) on top,
+  // then Show + Quit.
+  AppendMenuW(menu, MF_STRING, kTrayToggleCmd, tray_toggle_label_.c_str());
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, kTrayQuitCmd, L"Quit");
+  AppendMenuW(menu, MF_STRING, kTrayShowCmd, tray_show_label_.c_str());
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kTrayQuitCmd, tray_quit_label_.c_str());
   POINT pt;
   GetCursorPos(&pt);
   // Win32 quirk: the owner must be foreground, and a trailing WM_NULL is needed
@@ -903,7 +1163,16 @@ void FlutterWindow::OnDestroy() {
   KillSwitchDisengage();
   RestoreSystemProxy();  // put the user's proxy back if we changed it
   if (drop_hwnd_) {
-    RevokeDragDrop(drop_hwnd_);
+    // Elevated path: restore the original WNDPROC we subclassed in OnCreate.
+    // Leaving ElevatedDropProc installed past teardown (with g_orig_view_proc /
+    // g_drop_owner pointing at freed state) crashes on a later CallWindowProc.
+    if (g_orig_view_proc) {
+      ::SetWindowLongPtr(drop_hwnd_, GWLP_WNDPROC,
+                         reinterpret_cast<LONG_PTR>(g_orig_view_proc));
+      g_orig_view_proc = nullptr;
+    }
+    g_drop_owner = nullptr;
+    RevokeDragDrop(drop_hwnd_);  // OLE path (non-elevated); no-op when subclassed
     drop_hwnd_ = nullptr;
   }
   if (flutter_controller_) {
@@ -957,9 +1226,18 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       break;
     case kTrayMsg:
-      // Classic (non-v4) tray callback: lparam carries the mouse message.
-      if (LOWORD(lparam) == WM_LBUTTONDBLCLK ||
-          LOWORD(lparam) == WM_LBUTTONUP) {
+      // v4 tray callback: LOWORD(lParam) is the event (a mouse message OR NIN_*).
+      // Under v4 a single left-click arrives as NIN_SELECT (keyboard select as
+      // NIN_KEYSELECT), NOT WM_LBUTTONUP — without these the icon click was dead
+      // and the window could only be recovered via right-click→Show. Keep the
+      // mouse-message + balloon cases too (belt-and-suspenders across shells).
+      if (LOWORD(lparam) == NIN_SELECT ||
+          LOWORD(lparam) == NIN_KEYSELECT ||
+          LOWORD(lparam) == WM_LBUTTONDBLCLK ||
+          LOWORD(lparam) == WM_LBUTTONUP ||
+          LOWORD(lparam) == NIN_BALLOONUSERCLICK) {
+        // Icon click OR a click on a notification balloon → surface the window
+        // (so e.g. a connection-error balloon can be opened to see the details).
         ShowFromTray();
       } else if (LOWORD(lparam) == WM_RBUTTONUP ||
                  LOWORD(lparam) == WM_CONTEXTMENU) {
@@ -967,6 +1245,14 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       return 0;
     case WM_COMMAND:
+      if (LOWORD(wparam) == kTrayToggleCmd) {
+        // Hand the connect/disconnect to Dart, which respects the insecure-node
+        // consent gate and drives the controller.
+        if (system_channel_) {
+          system_channel_->InvokeMethod("trayToggle", nullptr);
+        }
+        return 0;
+      }
       if (LOWORD(wparam) == kTrayShowCmd) {
         ShowFromTray();
         return 0;

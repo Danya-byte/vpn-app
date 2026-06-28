@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart'; // StateProvider (Riverpod 3)
 
@@ -15,6 +14,7 @@ import '../../core/diagnostics_controller.dart';
 import '../../core/format.dart';
 import '../../core/profiles_controller.dart';
 import '../../core/speed_test.dart';
+import '../../app/theme.dart';
 import '../../l10n/app_localizations.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/glass.dart';
@@ -34,7 +34,7 @@ class _ActivityPageState extends ConsumerState<ActivityPage> {
     final l = AppLocalizations.of(context);
     return Padding(
       // bottom clears the floating nav so the card isn't trapped behind it.
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, AppTheme.kNavReserve),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -44,26 +44,17 @@ class _ActivityPageState extends ConsumerState<ActivityPage> {
           const SizedBox(height: 12),
           const _SpeedTestCard(),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              // Horizontally scrollable so 4 chips never overflow the narrow window.
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      _chip(l.tabConnections, 0),
-                      const SizedBox(width: 6),
-                      _chip(l.tabLogs, 1),
-                      const SizedBox(width: 6),
-                      _chip(l.diagnostics, 2),
-                      const SizedBox(width: 6),
-                      _chip(l.policies, 3),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+          GlassSegmented<int>(
+            value: _tab,
+            segments: const [0, 1, 2, 3],
+            labelOf: (i) => switch (i) {
+              0 => l.tabConnections,
+              1 => l.tabLogs,
+              2 => l.diagnostics,
+              _ => l.policies,
+            },
+            onChanged: (i) => setState(() => _tab = i),
+            height: 40,
           ),
           const SizedBox(height: 8),
           Expanded(
@@ -82,37 +73,6 @@ class _ActivityPageState extends ConsumerState<ActivityPage> {
     );
   }
 
-  Widget _chip(String label, int index) {
-    final scheme = Theme.of(context).colorScheme;
-    final selected = _tab == index;
-    return GestureDetector(
-      onTap: () => setState(() => _tab = index),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: selected
-              ? scheme.primary.withValues(alpha: 0.18)
-              : Colors.white.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: selected
-                ? scheme.primary.withValues(alpha: 0.40)
-                : Colors.white.withValues(alpha: 0.10),
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: selected
-                ? scheme.primary
-                : scheme.onSurface.withValues(alpha: 0.6),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _InfoCard extends ConsumerWidget {
@@ -174,7 +134,7 @@ class _InfoCard extends ConsumerWidget {
         const SizedBox(height: 4),
         Text(
           fmtRate(bps),
-          style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
         ),
       ],
     );
@@ -366,7 +326,7 @@ class _SpeedTestCard extends ConsumerWidget {
             child: Text(
               st.phase == SpeedPhase.done ? l.speedTestRetry : l.speedTestRun,
               style: TextStyle(
-                fontSize: 12.5,
+                fontSize: AppTheme.tsBody,
                 fontWeight: FontWeight.w600,
                 color: (st.running || !connected)
                     ? scheme.onSurface.withValues(alpha: 0.3)
@@ -449,34 +409,43 @@ class _FloatingCopyLogs extends ConsumerWidget {
     final l = AppLocalizations.of(context);
     final scheme = Theme.of(context).colorScheme;
     final logs = ref.watch(coreControllerProvider.select((s) => s.logs));
-    return Material(
-      color: Colors.transparent,
-      child: Tooltip(
+    final enabled = logs.isNotEmpty;
+    return CopyFlash(
+      text: logs.join('\n'),
+      onCopied: () => AppToast.show(context, l.copied),
+      builder: (context, done, copy) => Tooltip(
         message: l.copy,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(19),
-          onTap: logs.isEmpty
-              ? null
-              : () {
-                  Clipboard.setData(ClipboardData(text: logs.join('\n')));
-                  AppToast.show(context, l.copied);
-                },
-          child: Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: scheme.primary.withValues(alpha: 0.22),
-              border: Border.all(color: scheme.primary.withValues(alpha: 0.45)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.25),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
-                ),
-              ],
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: enabled ? copy : null,
+          child: Opacity(
+            opacity: enabled ? 1 : 0.45,
+            child: Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: (done ? AppTheme.success : scheme.primary)
+                    .withValues(alpha: 0.22),
+                border: Border.all(
+                    color: (done ? AppTheme.success : scheme.primary)
+                        .withValues(alpha: 0.45)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: Icon(done ? Icons.check_rounded : Icons.copy_rounded,
+                    key: ValueKey(done),
+                    size: 17,
+                    color: done ? AppTheme.success : scheme.primary),
+              ),
             ),
-            child: Icon(Icons.copy_rounded, size: 17, color: scheme.primary),
           ),
         ),
       ),
@@ -491,16 +460,41 @@ class _ConnectionsView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l = AppLocalizations.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final snap =
-        ref.watch(connectionsProvider).value ?? ConnectionsSnapshot.empty;
-    final conns = snap.connections;
-    if (conns.isEmpty) {
+    final connected = ref.watch(coreControllerProvider.select((s) => s.isOn));
+    final async = ref.watch(connectionsProvider);
+    // Branch the four states the old single "no connections" message collapsed:
+    // (1) core off → a connect hint, (2) first poll in flight → a spinner,
+    // (3) the poll errored → an error row, (4) connected: the real list, or the
+    // genuine empty state only when the core IS on and returned zero connections.
+    if (!connected) {
+      return _stateMessage(context, l.connectionsConnect);
+    }
+    if (async.isLoading && !async.hasValue) {
       return Center(
-        child: Text(
-          l.noConnections,
-          style: TextStyle(color: scheme.onSurface.withValues(alpha: 0.4)),
+        child: Semantics(
+          label: l.statusConnecting,
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: scheme.primary,
+            ),
+          ),
         ),
       );
+    }
+    if (async.hasError && !async.hasValue) {
+      return _stateMessage(
+        context,
+        l.msgLoadError('${async.error}'),
+        color: scheme.error.withValues(alpha: 0.8),
+      );
+    }
+    final snap = async.value ?? ConnectionsSnapshot.empty;
+    final conns = snap.connections;
+    if (conns.isEmpty) {
+      return _stateMessage(context, l.noConnections);
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -581,6 +575,24 @@ class _ConnectionsView extends ConsumerWidget {
       ],
     );
   }
+
+  /// Centered status line shared by the connect-hint / error / empty states.
+  /// Marked as a live region so a screen reader announces the state change.
+  Widget _stateMessage(BuildContext context, String text, {Color? color}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Semantics(
+        liveRegion: true,
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: color ?? scheme.onSurface.withValues(alpha: 0.4),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Built-in censorship diagnostics: probes RU control sites + RKN-blocked sites
@@ -632,6 +644,7 @@ class _DiagnosticsView extends ConsumerWidget {
         SizedBox(
           height: 42,
           child: GlassButton(
+            grounded: true,
             onPressed: running
                 ? null
                 : () => ref.read(diagnosticsControllerProvider.notifier).run(),
@@ -662,6 +675,7 @@ class _DiagnosticsView extends ConsumerWidget {
         SizedBox(
           height: 42,
           child: GlassButton(
+            grounded: true,
             onPressed: (diag.serverRunning || tunCaptured)
                 ? null
                 : () => ref
@@ -687,8 +701,8 @@ class _DiagnosticsView extends ConsumerWidget {
             child: Text(
               l.serverDiagTunHint,
               style: TextStyle(
-                fontSize: 10.5,
-                color: scheme.onSurface.withValues(alpha: 0.5),
+                fontSize: AppTheme.tsCaption,
+                color: scheme.onSurface.withValues(alpha: AppTheme.alphaSecondary),
               ),
             ),
           ),
@@ -733,38 +747,41 @@ class _DiagnosticsView extends ConsumerWidget {
                   ),
                 ),
                 if (diag.serverResults.isNotEmpty)
-                  InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () {
-                      Clipboard.setData(
-                        ClipboardData(text: _serverReport(diag)),
-                      );
-                      AppToast.of(
-                        context,
-                      ).message(l.serverDiagCopied, kind: ToastKind.success);
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.copy_rounded,
-                            size: 12,
-                            color: scheme.primary,
+                  CopyFlash(
+                    text: _serverReport(diag),
+                    onCopied: () => AppToast.of(context).message(
+                        l.serverDiagCopied,
+                        kind: ToastKind.success),
+                    builder: (context, done, copy) => Tooltip(
+                      message: l.serverDiagCopy,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: copy,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
                           ),
-                          const SizedBox(width: 3),
-                          Text(
-                            l.serverDiagCopy,
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              color: scheme.primary,
-                            ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                done ? Icons.check_rounded : Icons.copy_rounded,
+                                size: 12,
+                                color: done ? AppTheme.success : scheme.primary,
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                done ? l.copied : l.serverDiagCopy,
+                                style: TextStyle(
+                                  fontSize: AppTheme.tsCaption,
+                                  color:
+                                      done ? AppTheme.success : scheme.primary,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
@@ -789,8 +806,8 @@ class _DiagnosticsView extends ConsumerWidget {
               child: Text(
                 l.serverDiagHint,
                 style: TextStyle(
-                  fontSize: 10.5,
-                  color: scheme.onSurface.withValues(alpha: 0.45),
+                  fontSize: AppTheme.tsCaption,
+                  color: scheme.onSurface.withValues(alpha: AppTheme.alphaSecondary),
                 ),
               ),
             ),
@@ -809,7 +826,7 @@ class _DiagnosticsView extends ConsumerWidget {
                 Text(
                   l.diagDesyncOfferText,
                   style: TextStyle(
-                    fontSize: 11.5,
+                    fontSize: AppTheme.tsCaption,
                     height: 1.3,
                     color: scheme.onSurface.withValues(alpha: 0.75),
                   ),
@@ -869,8 +886,8 @@ class _DiagRow extends StatelessWidget {
     final l = AppLocalizations.of(context);
     final scheme = Theme.of(context).colorScheme;
     final (String label, Color color) = switch (r.direct) {
-      BlockVerdict.ok => (l.vOk, Colors.green),
-      BlockVerdict.dnsPoisoned => (l.vDnsPoisoned, Colors.orange),
+      BlockVerdict.ok => (l.vOk, AppTheme.success),
+      BlockVerdict.dnsPoisoned => (l.vDnsPoisoned, AppTheme.warning),
       BlockVerdict.tlsDpi => (l.vTlsDpi, scheme.error),
       BlockVerdict.tcpReset => (l.vTcpReset, scheme.error),
       BlockVerdict.timeout => (l.vTimeout, Colors.grey),
@@ -897,7 +914,7 @@ class _DiagRow extends StatelessWidget {
             ),
             _chip(
               r.tunnelOk! ? l.vOk : '✗',
-              r.tunnelOk! ? Colors.green : scheme.error,
+              r.tunnelOk! ? AppTheme.success : scheme.error,
             ),
           ],
         ],
@@ -909,13 +926,13 @@ class _DiagRow extends StatelessWidget {
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
     decoration: BoxDecoration(
       color: color.withValues(alpha: 0.15),
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(AppTheme.rChip),
       border: Border.all(color: color.withValues(alpha: 0.4)),
     ),
     child: Text(
       text,
       style: TextStyle(
-        fontSize: 10.5,
+        fontSize: AppTheme.tsCaption,
         fontWeight: FontWeight.w600,
         color: color,
       ),
@@ -935,7 +952,7 @@ class _ServerDiagRow extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final (String label, Color color) = switch (r.verdict) {
       // L4 reaches, but the proxy may still be DPI-killed → amber, not green.
-      ServerVerdict.reachableL4 => (l.svReachableL4, Colors.orange),
+      ServerVerdict.reachableL4 => (l.svReachableL4, AppTheme.warning),
       ServerVerdict.serverBlocked => (l.svServerBlocked, scheme.error),
       ServerVerdict.whitelistCollapse => (l.svWhitelist, scheme.error),
       ServerVerdict.udpInconclusive => (l.svUdpInconclusive, Colors.grey),
@@ -957,8 +974,8 @@ class _ServerDiagRow extends StatelessWidget {
           Text(
             r.endpoint.udp ? 'UDP' : 'TCP',
             style: TextStyle(
-              fontSize: 9.5,
-              color: scheme.onSurface.withValues(alpha: 0.4),
+              fontSize: AppTheme.tsCaption,
+              color: scheme.onSurface.withValues(alpha: AppTheme.alphaSecondary),
             ),
           ),
           if (r.tcpMs != null) ...[
@@ -966,8 +983,8 @@ class _ServerDiagRow extends StatelessWidget {
             Text(
               '${r.tcpMs}ms',
               style: TextStyle(
-                fontSize: 9.5,
-                color: scheme.onSurface.withValues(alpha: 0.4),
+                fontSize: AppTheme.tsCaption,
+                color: scheme.onSurface.withValues(alpha: AppTheme.alphaSecondary),
               ),
             ),
           ],
@@ -976,13 +993,13 @@ class _ServerDiagRow extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
               color: color.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(AppTheme.rChip),
               border: Border.all(color: color.withValues(alpha: 0.4)),
             ),
             child: Text(
               label,
               style: TextStyle(
-                fontSize: 10.5,
+                fontSize: AppTheme.tsCaption,
                 fontWeight: FontWeight.w600,
                 color: color,
               ),
@@ -1096,8 +1113,17 @@ Future<void> _testAndPickFastest(
   await _testMany(ref, group.all);
   if (!context.mounted) return;
   // Fresh per-member delays straight from the API — the /delay calls we just ran
-  // updated each member's history.
-  final all = await ref.read(clashApiProvider).proxies();
+  // updated each member's history. The Clash API can throw (core stopped /
+  // disconnected mid-batch); a thrown future here would be an uncaught async
+  // error — surface a localized failure toast and bail instead.
+  final List<ProxyGroup> all;
+  try {
+    all = await ref.read(clashApiProvider).proxies();
+  } catch (_) {
+    if (!context.mounted) return;
+    toast.message(l.noReachableServer);
+    return;
+  }
   if (!context.mounted) return;
   final delays = {for (final p in all) p.name: p.delay};
   String? best;
@@ -1177,8 +1203,8 @@ Widget _pingChip(BuildContext context, int? delay, bool measuring) {
     );
   }
   final color = delay < 200
-      ? const Color(0xFF4ADE80)
-      : (delay < 500 ? Colors.orange : scheme.error);
+      ? AppTheme.success
+      : (delay < 500 ? AppTheme.warning : scheme.error);
   return Text(
     '$delay ms',
     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color),
@@ -1356,8 +1382,13 @@ class _PoliciesViewState extends ConsumerState<_PoliciesView> {
     // Reconcile optimistic picks: once the core's real `now` matches the pending
     // value (or the member vanished), drop it — else it permanently shadows the
     // truth and the radio lies after an auto-hop/restart moved the selector.
-    final pending = ref.read(_pendingPickProvider);
-    if (pending.isNotEmpty) {
+    // Driven by a ONCE-registered listener (ref.listen dedupes across rebuilds)
+    // on the groups stream — NOT re-scheduled from build, which fired a fresh
+    // microtask mutation on every single rebuild (theme tick, parent setState…).
+    ref.listen(proxyGroupsProvider, (_, next) {
+      final groups = next.value ?? const <ProxyGroup>[];
+      final pending = ref.read(_pendingPickProvider);
+      if (pending.isEmpty) return;
       final stale = <String>[];
       for (final e in pending.entries) {
         ProxyGroup? g;
@@ -1371,18 +1402,15 @@ class _PoliciesViewState extends ConsumerState<_PoliciesView> {
           stale.add(e.key);
         }
       }
-      if (stale.isNotEmpty) {
-        Future.microtask(() {
-          ref.read(_pendingPickProvider.notifier).update((m) {
-            final n = Map<String, String>.from(m);
-            for (final k in stale) {
-              n.remove(k);
-            }
-            return n;
-          });
-        });
-      }
-    }
+      if (stale.isEmpty) return;
+      ref.read(_pendingPickProvider.notifier).update((m) {
+        final n = Map<String, String>.from(m);
+        for (final k in stale) {
+          n.remove(k);
+        }
+        return n;
+      });
+    });
     final shown = _shownGroups(groups);
     // Start the bounded retry probe-loop once per connection so EVERY leaf's chip
     // fills in (not just the fast-handshake ones) — retrying cold XHTTP/Reality
@@ -1435,14 +1463,14 @@ class _AliveChip extends StatelessWidget {
         ? scheme.onSurface.withValues(alpha: 0.45)
         : (alive == 0
               ? scheme.error
-              : (alive == total ? const Color(0xFF4ADE80) : Colors.orange));
+              : (alive == total ? AppTheme.success : AppTheme.warning));
     return Tooltip(
       message: AppLocalizations.of(context).policyAlive,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(AppTheme.rChip),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1452,7 +1480,7 @@ class _AliveChip extends StatelessWidget {
             Text(
               measuring ? '…/$total' : '$alive/$total',
               style: TextStyle(
-                fontSize: 9.5,
+                fontSize: AppTheme.tsMicro,
                 fontWeight: FontWeight.w700,
                 color: color,
               ),
@@ -1518,14 +1546,14 @@ class _GroupCard extends ConsumerWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                 decoration: BoxDecoration(
                   color: scheme.onSurface.withValues(alpha: 0.06),
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: BorderRadius.circular(AppTheme.rChip),
                 ),
                 child: Text(
                   isAuto ? l.policyAuto : group.type,
                   style: TextStyle(
-                    fontSize: 9.5,
+                    fontSize: AppTheme.tsCaption,
                     fontWeight: FontWeight.w700,
-                    color: scheme.onSurface.withValues(alpha: 0.55),
+                    color: scheme.onSurface.withValues(alpha: AppTheme.alphaSecondary),
                   ),
                 ),
               ),
@@ -1537,10 +1565,10 @@ class _GroupCard extends ConsumerWidget {
               // Ping every member (fan out the warm /delay probes). Hidden in the
               // disconnected preview — there's no core to probe against.
               if (!preview)
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(8),
+                Tooltip(
+                  message: l.policyTestAll,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
                     // Test all members, then switch onto the fastest (Selector).
                     onTap: () => _testAndPickFastest(context, ref, group),
                     child: Padding(
@@ -1621,9 +1649,9 @@ class _MemberRow extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Material(
         color: Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppTheme.rButton),
         child: InkWell(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(AppTheme.rButton),
           // Tapping the active member is a no-op; tapping another switches it
           // (Selector only — URLTest is auto, so non-tappable).
           onTap: (selected || !switchable)
@@ -1689,7 +1717,7 @@ class _MemberRow extends ConsumerWidget {
               color: selected
                   ? scheme.primary.withValues(alpha: 0.16)
                   : Colors.white.withValues(alpha: 0.03),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(AppTheme.rButton),
               border: Border.all(
                 color: selected
                     ? scheme.primary.withValues(alpha: 0.4)
@@ -1714,7 +1742,7 @@ class _MemberRow extends ConsumerWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 12.5,
+                      fontSize: AppTheme.tsBody,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                       color: selected
                           ? scheme.primary
@@ -1726,7 +1754,7 @@ class _MemberRow extends ConsumerWidget {
                 // Latency chip — tap to re-ping just this member (no-op in the
                 // disconnected preview: there's no core to probe).
                 InkWell(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(AppTheme.rChip),
                   onTap: preview ? null : () => _testDelay(ref, member),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
@@ -1760,7 +1788,7 @@ class _PreviewBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: scheme.primary.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppTheme.rButton),
         border: Border.all(color: scheme.primary.withValues(alpha: 0.2)),
       ),
       child: Row(
@@ -1771,7 +1799,7 @@ class _PreviewBanner extends StatelessWidget {
             child: Text(
               text,
               style: TextStyle(
-                fontSize: 11.5,
+                fontSize: AppTheme.tsCaption,
                 color: scheme.onSurface.withValues(alpha: 0.75),
               ),
             ),
@@ -1794,7 +1822,6 @@ class _ConfirmDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -1803,21 +1830,28 @@ class _ConfirmDialog extends StatelessWidget {
         children: [
           Text(
             message,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+              fontSize: AppTheme.tsHeading,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 18),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              GlassButton(
                 onPressed: () => Navigator.pop(context, false),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Text(l.cancel),
               ),
               const SizedBox(width: 8),
-              FilledButton(
+              TgButton(
+                label: confirmLabel,
+                tone: AppTheme.danger,
                 onPressed: () => Navigator.pop(context, true),
-                style: FilledButton.styleFrom(backgroundColor: scheme.error),
-                child: Text(confirmLabel),
               ),
             ],
           ),

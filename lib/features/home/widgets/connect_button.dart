@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../app/theme.dart';
 import '../../../core/app_settings.dart';
 import '../../../core/core_controller.dart';
 import '../../../core/profiles_controller.dart';
@@ -27,10 +28,8 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
   // real interception risk for the at-risk audience. Disconnect is never gated.
   Future<void> _onTap() async {
     final notifier = ref.read(coreControllerProvider.notifier);
-    final status = ref.read(coreControllerProvider).status;
-    final connecting =
-        status == CoreStatus.stopped || status == CoreStatus.error;
-    if (connecting) {
+    final wantConnect = _wasConnecting(); // captured BEFORE the async consent gap
+    if (wantConnect) {
       final node = ref.read(profilesProvider).selectedNode;
       // Ask the MITM consent ONCE per insecure node, then remember it — the
       // user's #4 complaint was being re-prompted on every single connect.
@@ -46,7 +45,30 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
         ref.read(settingsProvider.notifier).acceptInsecure(node.insecureKey);
       }
     }
-    notifier.toggle();
+    // Drive toward the CAPTURED intent, not a blind toggle: during the async
+    // consent the live state can race (connect-on-launch / a tray toggle), and a
+    // plain toggle() would then INVERT — disconnecting the node the user just
+    // consented to connect. `isOn` is running-ONLY (excludes the transient
+    // `starting`), and toggle() == (isOn||isBusy)?stop():start(); comparing
+    // against isOn alone would fire toggle() during `starting` and hit the
+    // isBusy→stop() branch, cancelling the very connect we want. So gate on the
+    // full heading-on state and only start from a settled stopped/error state.
+    try {
+      final st = ref.read(coreControllerProvider);
+      if (wantConnect) {
+        if (!st.isOn && !st.isBusy) await notifier.toggle(); // stopped/error → start
+      } else if (st.isOn || st.status == CoreStatus.starting) {
+        await notifier.toggle(); // running/starting → stop
+      }
+    } catch (_) {
+      // toggle() surfaces failures through CoreState (error status / details);
+      // swallow here so an unobserved Future doesn't crash the zone.
+    }
+  }
+
+  bool _wasConnecting() {
+    final status = ref.read(coreControllerProvider).status;
+    return status == CoreStatus.stopped || status == CoreStatus.error;
   }
 
   @override
@@ -80,13 +102,16 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
     // Distinct ring per state so "Connecting" / "Disconnecting" don't read as
     // idle (they previously fell through to the default white branch).
     final Color ring = swap
-        ? const Color(0xFFE0A53D)
+        ? AppTheme.warning
         : switch (status) {
             CoreStatus.running => scheme.primary,
             CoreStatus.error => scheme.error,
             CoreStatus.starting => scheme.primary.withValues(alpha: 0.6),
             CoreStatus.stopping => Colors.white.withValues(alpha: 0.5),
-            CoreStatus.stopped => Colors.white.withValues(alpha: 0.28),
+            // Resting disc: lift the idle ring so it doesn't read as nearly
+            // invisible, but dim clearly when there's no target to connect to.
+            CoreStatus.stopped =>
+              Colors.white.withValues(alpha: enabled ? 0.45 : 0.22),
           };
 
     final String label = swap
@@ -106,8 +131,14 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
       child: GestureDetector(
         onTap: enabled ? _onTap : null,
         onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
-        onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
-        onTapCancel: () => setState(() => _pressed = false),
+        // Reset _pressed unconditionally (not gated on `enabled`) so the dip can't
+        // stick if the button disables between tap-down and tap-up.
+        onTapUp: (_) {
+          if (mounted) setState(() => _pressed = false);
+        },
+        onTapCancel: () {
+          if (mounted) setState(() => _pressed = false);
+        },
         child: AnimatedScale(
         scale: _pressed ? 0.95 : 1.0,
         duration: const Duration(milliseconds: 140),
@@ -119,15 +150,22 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
           height: 196,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            boxShadow: isOn
-                ? [
-                    BoxShadow(
-                      color: ring.withValues(alpha: 0.45),
-                      blurRadius: 48,
-                      spreadRadius: 4,
-                    ),
-                  ]
-                : const [],
+            // A luminous halo — always faintly lit so the orb reads as a glowing
+            // glass dome, blooming bright + wide (a second, broader bloom) when
+            // connected.
+            boxShadow: [
+              BoxShadow(
+                color: ring.withValues(alpha: isOn ? 0.55 : 0.16),
+                blurRadius: isOn ? 60 : 26,
+                spreadRadius: isOn ? 6 : 0,
+              ),
+              if (isOn)
+                BoxShadow(
+                  color: ring.withValues(alpha: 0.28),
+                  blurRadius: 120,
+                  spreadRadius: 20,
+                ),
+            ],
           ),
           child: ClipOval(
             child: BackdropFilter(
@@ -141,9 +179,13 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: [
-                      Colors.white.withValues(alpha: 0.16),
-                      Colors.white.withValues(alpha: 0.04),
+                      Colors.white.withValues(alpha: isOn ? 0.22 : 0.15),
+                      // Mid-dome tinted with the ring colour when on, so the glass
+                      // glows in the brand hue rather than reading as grey frost.
+                      ring.withValues(alpha: isOn ? 0.13 : 0.0),
+                      Colors.white.withValues(alpha: 0.03),
                     ],
+                    stops: const [0.0, 0.55, 1.0],
                   ),
                   border: Border.all(color: ring, width: 5),
                 ),
@@ -157,7 +199,7 @@ class _ConnectButtonState extends ConsumerState<ConnectButton> {
                             child: CircularProgressIndicator(
                                 strokeWidth: 3,
                                 color: swap
-                                    ? const Color(0xFFE0A53D)
+                                    ? AppTheme.warning
                                     : scheme.primary),
                           )
                         : Icon(Icons.power_settings_new_rounded,
@@ -181,8 +223,6 @@ class _InsecureConnectConsent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final scheme = Theme.of(context).colorScheme;
-    const amber = Color(0xFFE0A53D);
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -191,7 +231,8 @@ class _InsecureConnectConsent extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.gpp_maybe_rounded, size: 20, color: amber),
+              const Icon(Icons.gpp_maybe_rounded,
+                  size: 20, color: AppTheme.warning),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(l.insecureConnectTitle,
@@ -202,19 +243,19 @@ class _InsecureConnectConsent extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(l.insecureConnectBody,
-              style: const TextStyle(fontSize: 13.5, height: 1.35)),
+              style: const TextStyle(fontSize: AppTheme.tsBody, height: 1.35)),
           const SizedBox(height: 18),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              GlassButton(
                   onPressed: () => Navigator.pop(context, false),
-                  child: Text(l.cancel)),
+                  child: Center(child: Text(l.cancel))),
               const SizedBox(width: 8),
-              FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  style: FilledButton.styleFrom(backgroundColor: scheme.error),
-                  child: Text(l.insecureConnectAction)),
+              TgButton(
+                  label: l.insecureConnectAction,
+                  tone: AppTheme.danger,
+                  onPressed: () => Navigator.pop(context, true)),
             ],
           ),
         ],

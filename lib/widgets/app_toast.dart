@@ -1,7 +1,8 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:vpn_app/app/theme.dart';
+import 'package:vpn_app/l10n/app_localizations.dart';
+import 'package:vpn_app/widgets/glass.dart';
 
 /// Severity of a toast — drives its icon/colour and how long it stays. Errors
 /// must read as errors (not the same neutral chip as a success) and linger long
@@ -109,11 +110,13 @@ class _ToastWidgetState extends State<_ToastWidget>
 
   @override
   Widget build(BuildContext context) {
-    final slot = widget.slot().clamp(0, 4);
     // Exit start scales with total duration so the enter/hold/exit shape holds.
     final exitStart = widget.kind == ToastKind.error ? 0.9 : 0.823;
+    // Recompute slot/top INSIDE the per-frame builder so survivors pack upward
+    // when an earlier toast dismisses (the live index shrinks every frame),
+    // instead of holding a stale top and leaving a gap.
     return Positioned(
-      top: widget.topPad + 14 + slot * 62.0,
+      top: 0,
       left: 16,
       right: 16,
       child: Material(
@@ -122,6 +125,8 @@ class _ToastWidgetState extends State<_ToastWidget>
           animation: _c,
           builder: (context, child) {
             final t = _c.value;
+            final slot = widget.slot().clamp(0, 4);
+            final top = widget.topPad + 14 + slot * 62.0;
             final enter = (t / _enterEnd).clamp(0.0, 1.0);
             final exit = ((t - exitStart) / (1 - exitStart)).clamp(0.0, 1.0);
             final dy = (1 - Curves.easeOutBack.transform(enter)) * -36 -
@@ -130,7 +135,7 @@ class _ToastWidgetState extends State<_ToastWidget>
             return Opacity(
               opacity: opacity.clamp(0.0, 1.0),
               child: Transform.translate(
-                offset: Offset(0, dy),
+                offset: Offset(0, top + dy),
                 child: child,
               ),
             );
@@ -153,51 +158,46 @@ class _ToastCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const green = Color(0xFF4ADE80);
     final (IconData icon, Color accent) = switch (kind) {
       ToastKind.error => (Icons.error_outline_rounded, scheme.error),
-      ToastKind.success => (Icons.check_circle_outline_rounded, green),
+      ToastKind.success => (Icons.check_circle_outline_rounded, AppTheme.success),
       ToastKind.info => (Icons.info_outline_rounded, scheme.primary),
     };
-    final card = ClipRRect(
-      borderRadius: BorderRadius.circular(18),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.white.withValues(alpha: 0.20),
-                Colors.white.withValues(alpha: 0.08),
-              ],
-            ),
-            // Error/success tint the border so severity reads at a glance.
-            border: Border.all(
-                color: kind == ToastKind.info
-                    ? Colors.white.withValues(alpha: 0.24)
-                    : accent.withValues(alpha: 0.55)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.28),
-                blurRadius: 22,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 18, color: accent),
-              const SizedBox(width: 10),
-              Flexible(
+    // Severity reads at a glance via a tinted border; info keeps the neutral
+    // white@0.16 glass rim. The body is the shared liquid-glass material.
+    // GlassCard already paints its own white rim + drop shadow; the old outer
+    // shadow + white border DOUBLED both. Drop the shadow, and give info a
+    // transparent rim (the glass rim suffices) — only warning/error keep a thin
+    // severity-coloured rim on top.
+    final border = kind == ToastKind.info
+        ? Colors.transparent
+        : accent.withValues(alpha: 0.55);
+    final card = DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(AppTheme.rCard),
+        border: Border.all(color: border),
+      ),
+      child: GlassCard(
+        radius: AppTheme.rCard,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: accent),
+            const SizedBox(width: 10),
+            Flexible(
+              // Announce a freshly-mounted toast to screen readers (it floats in
+              // an overlay with no focus change, so without a live region it goes
+              // unread). `container` gives it its own a11y node.
+              child: Semantics(
+                liveRegion: true,
+                container: true,
                 child: Text(
                   text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: AppTheme.tsBody,
                     fontWeight: FontWeight.w500,
                     height: 1.3,
                     color: scheme.onSurface,
@@ -205,21 +205,27 @@ class _ToastCard extends StatelessWidget {
                   ),
                 ),
               ),
-              if (kind == ToastKind.error) ...[
-                const SizedBox(width: 8),
-                Icon(Icons.copy_rounded,
-                    size: 14, color: scheme.onSurface.withValues(alpha: 0.5)),
-              ],
+            ),
+            if (kind == ToastKind.error) ...[
+              const SizedBox(width: 8),
+              Icon(Icons.copy_rounded,
+                  size: 14, color: scheme.onSurface.withValues(alpha: 0.5)),
             ],
-          ),
+          ],
         ),
       ),
     );
     // An error is the one a user wants to keep/report — tap to copy its text.
     if (kind != ToastKind.error) return card;
-    return GestureDetector(
-      onTap: () => Clipboard.setData(ClipboardData(text: text)),
-      child: card,
+    // The tap-to-copy affordance is otherwise invisible to a screen reader (a
+    // bare GestureDetector has no role/label); expose it as a labelled button.
+    return Semantics(
+      button: true,
+      label: AppLocalizations.of(context).copy,
+      child: GestureDetector(
+        onTap: () => Clipboard.setData(ClipboardData(text: text)),
+        child: card,
+      ),
     );
   }
 }

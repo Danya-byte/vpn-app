@@ -58,6 +58,8 @@ class AppSettings {
     this.killSwitchTun = false, // EXPERIMENTAL WFP fence for TUN — default OFF until battle-tested
     this.fakeIpTun = false, // EXPERIMENTAL FakeIP DNS in TUN (faster first-load) — default OFF until on-device tested
     this.winwsDesync = false, // server-less WinDivert TLS-DPI bypass (winws.exe) — needs admin + the binary
+    this.telegramNative = false, // native serverless Telegram (tgcore.exe local MTProxy → un-throttled web gateway, uTLS) — no admin for the bridge
+    this.telegramNativeCalls = false, // tgcore WinDivert STUN-desync for Telegram calls — needs admin
     this.desyncStrategy = DesyncConfig.defaultStrategy, // winws desync method preset
     this.splitTunnelApps = const [], // process names routed DIRECT (bypass VPN) in TUN
     this.forceVpnApps = const [], // process names FORCED through the VPN (blocked apps)
@@ -105,6 +107,11 @@ class AppSettings {
   // desync the outbound TLS ClientHello so ТСПУ can't match the SNI. Defeats
   // TLS-DPI where the IP is reachable; needs admin (kernel driver) + the binary.
   final bool winwsDesync;
+  // Native serverless Telegram (tgcore.exe): a local MTProxy that bridges to the
+  // un-throttled web gateway over uTLS-masked WebSocket. The real engine that
+  // replaces the experimental WS bridge in the UI. Calls sub-toggle needs admin.
+  final bool telegramNative;
+  final bool telegramNativeCalls;
   final String desyncStrategy; // winws method preset (DesyncConfig.strategies key)
   final List<String> splitTunnelApps; // process names → direct (TUN split-tunnel)
   final List<String> forceVpnApps; // process names → pinned through the VPN
@@ -154,6 +161,8 @@ class AppSettings {
         'tlsFingerprint': tlsFingerprint,
         'mux': mux,
         'winwsDesync': winwsDesync,
+        'telegramNative': telegramNative,
+        'telegramNativeCalls': telegramNativeCalls,
         'desyncStrategy': desyncStrategy,
         'splitTunnelApps': splitTunnelApps,
         'forceVpnApps': forceVpnApps,
@@ -181,6 +190,8 @@ class AppSettings {
     bool? killSwitchTun,
     bool? fakeIpTun,
     bool? winwsDesync,
+    bool? telegramNative,
+    bool? telegramNativeCalls,
     String? desyncStrategy,
     List<String>? splitTunnelApps,
     List<String>? forceVpnApps,
@@ -221,6 +232,8 @@ class AppSettings {
         killSwitchTun: killSwitchTun ?? this.killSwitchTun,
         fakeIpTun: fakeIpTun ?? this.fakeIpTun,
         winwsDesync: winwsDesync ?? this.winwsDesync,
+        telegramNative: telegramNative ?? this.telegramNative,
+        telegramNativeCalls: telegramNativeCalls ?? this.telegramNativeCalls,
         desyncStrategy: desyncStrategy ?? this.desyncStrategy,
         splitTunnelApps: splitTunnelApps ?? this.splitTunnelApps,
         forceVpnApps: forceVpnApps ?? this.forceVpnApps,
@@ -270,9 +283,27 @@ class SettingsController extends Notifier<AppSettings> {
 
   @override
   AppSettings build() {
+    // Promote a half-written `.tmp` (a previous atomicWrite blocked mid-rename)
+    // before reading, so a locked-file save isn't silently lost on next launch.
+    CorePaths.recoverOrphanTmp(_file.path);
+    // ALSO recover a half-written `.bak.tmp`: the mirror is the corruption
+    // fallback below, and a torn `.bak` save (its own atomicWrite blocked mid-
+    // rename) would otherwise leave the mirror stale/missing exactly when needed.
+    CorePaths.recoverOrphanTmp('${_file.path}.bak');
+    return _load(_file) ??
+        _load(File('${_file.path}.bak')) ??
+        const AppSettings();
+  }
+
+  // Decode ONE settings file → null if missing / not a JSON object / unreadable,
+  // so a corrupt main falls back to the .bak mirror (then defaults) instead of a
+  // single torn write silently wiping every toggle (kill-switch, winws, creds).
+  AppSettings? _load(File f) {
     try {
-      if (_file.existsSync()) {
-        final j = jsonDecode(_file.readAsStringSync()) as Map<String, dynamic>;
+      if (!f.existsSync()) return null;
+      final d = jsonDecode(f.readAsStringSync());
+      if (d is Map) {
+        final j = d.cast<String, dynamic>();
         return AppSettings(
           mode: _enum(RouteMode.values, j['mode'] as String?, RouteMode.smart),
           vpnMode: _enum(
@@ -289,6 +320,8 @@ class SettingsController extends Notifier<AppSettings> {
           killSwitchTun: j['killSwitchTun'] as bool? ?? false,
           fakeIpTun: j['fakeIpTun'] as bool? ?? false,
           winwsDesync: j['winwsDesync'] as bool? ?? false,
+          telegramNative: j['telegramNative'] as bool? ?? false,
+          telegramNativeCalls: j['telegramNativeCalls'] as bool? ?? false,
           desyncStrategy:
               DesyncConfig.isValidStrategy(j['desyncStrategy'] as String? ?? '')
                   ? j['desyncStrategy'] as String
@@ -332,20 +365,22 @@ class SettingsController extends Notifier<AppSettings> {
           ech: j['ech'] as bool? ?? false,
           tcpFastOpen: j['tcpFastOpen'] as bool? ?? false,
           mptcp: j['mptcp'] as bool? ?? false,
-          localeCode: j['locale'] as String?,
+          // Whitelist like tunStack/muxProtocol above — settings.json is hand-
+          // editable + WebDAV-synced, so a stale/foreign code ('de', garbage)
+          // must fall back to follow-system, not silently force English.
+          localeCode:
+              const ['en', 'ru'].contains(j['locale']) ? j['locale'] as String : null,
         );
       }
     } catch (_) {
-      // fall back to defaults
+      // unreadable / malformed → caller tries .bak, then defaults
     }
-    return const AppSettings();
+    return null;
   }
 
   void _save() {
     try {
-      CorePaths.atomicWrite(
-          _file.path,
-          jsonEncode({
+      final json = jsonEncode({
             'mode': state.mode.name,
             'vpnMode': state.vpnMode.name,
             'antiDpi': state.antiDpi,
@@ -358,6 +393,8 @@ class SettingsController extends Notifier<AppSettings> {
             'killSwitchTun': state.killSwitchTun,
             'fakeIpTun': state.fakeIpTun,
             'winwsDesync': state.winwsDesync,
+            'telegramNative': state.telegramNative,
+            'telegramNativeCalls': state.telegramNativeCalls,
             'desyncStrategy': state.desyncStrategy,
             'splitTunnelApps': state.splitTunnelApps,
             'forceVpnApps': state.forceVpnApps,
@@ -383,7 +420,11 @@ class SettingsController extends Notifier<AppSettings> {
             'tcpFastOpen': state.tcpFastOpen,
             'mptcp': state.mptcp,
             'locale': state.localeCode,
-          }));
+          });
+      CorePaths.atomicWrite(_file.path, json);
+      // Mirror to a .bak (same content, separate file) so a later single-file
+      // corruption of the main store is recoverable on next load.
+      CorePaths.atomicWrite('${_file.path}.bak', json);
     } catch (_) {}
   }
 
@@ -430,6 +471,19 @@ class SettingsController extends Notifier<AppSettings> {
   /// this up on the next (re)connect — toggling it live restarts the core.
   void setWinwsDesync(bool v) {
     state = state.copyWith(winwsDesync: v);
+    _save();
+  }
+
+  /// Native serverless Telegram engine (tgcore.exe). The native controller
+  /// watches this and starts/stops the local MTProxy.
+  void setTelegramNative(bool v) {
+    state = state.copyWith(telegramNative: v);
+    _save();
+  }
+
+  /// tgcore WinDivert STUN-desync for Telegram calls (needs admin).
+  void setTelegramNativeCalls(bool v) {
+    state = state.copyWith(telegramNativeCalls: v);
     _save();
   }
 
@@ -613,8 +667,11 @@ class SettingsController extends Notifier<AppSettings> {
     bool? boolOf(dynamic v) => v is bool ? v : null;
     num? numOf(dynamic v) => v is num ? v : null;
     String? strOf(dynamic v) => v is String ? v : null;
+    // An EMPTY shared list means "this field wasn't set", NOT "clear yours" —
+    // return null (no-change) so importing a bundle with empty/absent lists never
+    // silently erases the recipient's split-tunnel / force-VPN / custom rules.
     List<String>? listOf(dynamic v) =>
-        v is List ? v.map((e) => '$e').toList() : null;
+        v is List && v.isNotEmpty ? v.map((e) => '$e').toList() : null;
     String? validFp(dynamic v) => tlsFingerprints.contains(v) ? v as String : null;
     final msRaw = numOf(j['muxStreams'])?.toInt();
     final ms = msRaw == null ? null : (msRaw < 1 ? 1 : (msRaw > 256 ? 256 : msRaw));
@@ -627,6 +684,11 @@ class SettingsController extends Notifier<AppSettings> {
             ? esRaw
             : null);
     final crRaw = j['customRules'];
+    // Same no-wipe rule for custom rules: an empty list OR a list where every
+    // entry fails to parse ⇒ null (keep the recipient's rules), not [].
+    final crList = crRaw is List
+        ? crRaw.map(RouteRule.fromJson).whereType<RouteRule>().toList()
+        : null;
     state = state.copyWith(
       antiDpi: boolOf(j['antiDpi']),
       autoAdapt: boolOf(j['autoAdapt']),
@@ -635,15 +697,15 @@ class SettingsController extends Notifier<AppSettings> {
       tlsFingerprint: validFp(j['tlsFingerprint']),
       mux: boolOf(j['mux']),
       winwsDesync: boolOf(j['winwsDesync']),
+      telegramNative: boolOf(j['telegramNative']),
+      telegramNativeCalls: boolOf(j['telegramNativeCalls']),
       desyncStrategy:
           DesyncConfig.isValidStrategy(strOf(j['desyncStrategy']) ?? '')
               ? strOf(j['desyncStrategy'])
               : null,
       splitTunnelApps: listOf(j['splitTunnelApps']),
       forceVpnApps: listOf(j['forceVpnApps']),
-      customRules: crRaw is List
-          ? crRaw.map(RouteRule.fromJson).whereType<RouteRule>().toList()
-          : null,
+      customRules: (crList != null && crList.isNotEmpty) ? crList : null,
       ech: boolOf(j['ech']),
       tcpFastOpen: boolOf(j['tcpFastOpen']),
       mptcp: boolOf(j['mptcp']),

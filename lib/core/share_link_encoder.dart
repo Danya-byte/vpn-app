@@ -124,12 +124,20 @@ class ShareLinkEncoder {
               (Uri.tryParse(subRaw)?.isScheme('https') ?? false))
           ? subRaw
           : null;
+      // Optional metadata is type-checked, never cast-asserted: a hostile or
+      // stale link with a wrong-typed `settings`/`auto`/`v` must NOT abort the
+      // whole import (the nodes are the payload that matters) — bad metadata is
+      // silently dropped to its default.
+      final settingsField = j['settings'];
+      final versionField = j['v'];
       return ShareBundle(
         nodes: nodes,
-        settings: (j['settings'] as Map?)?.cast<String, dynamic>(),
+        settings: settingsField is Map
+            ? settingsField.cast<String, dynamic>()
+            : null,
         subUrl: sub,
-        autoUpdate: j['auto'] as bool? ?? true,
-        version: (j['v'] as num?)?.toInt() ?? 1,
+        autoUpdate: j['auto'] is bool ? j['auto'] as bool : true,
+        version: versionField is num ? versionField.toInt() : 1,
       );
     } catch (_) {
       return null;
@@ -305,9 +313,24 @@ class ShareLinkEncoder {
   static List<int> _gunzipCapped(List<int> bytes, int cap) {
     final sink = _CappedByteSink(cap);
     final conv = gzip.decoder.startChunkedConversion(sink);
-    conv.add(bytes);
-    conv.close();
-    return sink.bytes.takeBytes();
+    // On the cap-exceeded throw (a decompression bomb), the converter must still
+    // be torn down — close it in a finally so the native zlib stream is freed
+    // before the FormatException propagates, rather than leaking on the bomb path.
+    var closed = false;
+    try {
+      conv.add(bytes);
+      conv.close();
+      closed = true;
+      return sink.bytes.takeBytes();
+    } finally {
+      if (!closed) {
+        try {
+          conv.close();
+        } catch (_) {
+          // already aborted by the throw; the stream is being discarded anyway
+        }
+      }
+    }
   }
 }
 

@@ -51,6 +51,11 @@ app.*.map.json
 /core/**/*.srs
 /core/**/*.sys
 /core/**/*.bin
+# EXCEPTION: tgcore.exe is the maintainer's OWN native-Telegram engine (source:
+# github.com/Danya-byte/tg-core, GPL). It has no public release to pin/fetch, so —
+# unlike the redistributable cores above — it is committed directly so CI/release
+# builds include it. Rebuild from that repo's build.bat to refresh.
+!/core/windows/tgcore.exe
 
 # sing-box cache + any runtime db that lands in the tree (holds live state)
 cache.db

@@ -8,10 +8,12 @@ import '../../../core/app_settings.dart';
 import '../../../core/core_controller.dart';
 import '../../../core/format.dart';
 import '../../../core/latency_probe.dart';
+import '../../../core/native_admin.dart';
 import '../../../core/profiles_controller.dart';
 import '../../../core/proxy_node.dart';
 import '../../../core/share_link_encoder.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../app/theme.dart';
 import '../../../widgets/app_toast.dart';
 import '../../../widgets/glass.dart';
 import 'config_viewer.dart';
@@ -37,6 +39,10 @@ class _ProfilesSheet extends ConsumerWidget {
     // around the tunnel, and it's redundant (live latency lives in Policies). So
     // it's a disconnected-only action.
     final connected = ref.watch(coreControllerProvider).isOn;
+    // Live in-tunnel ping of the ACTIVE node (clash urltest) — gives the connected
+    // node a real `ms` even on a UDP transport (hy2/tuic) the pre-connect TCP probe
+    // can't measure (it'd show "UDP" otherwise — the user's hy2 "no ping" gripe).
+    final liveMs = ref.watch(latencyProvider).value;
     final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: EdgeInsets.only(
@@ -49,12 +55,12 @@ class _ProfilesSheet extends ConsumerWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _grabber(),
+          // (grabber is provided by showGlassSheet itself now)
           Row(
             children: [
               Text('${l.profiles} (${state.nodes.length})',
                   style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w700)),
+                      fontSize: AppTheme.tsTitle, fontWeight: FontWeight.w700)),
               const Spacer(),
               if (state.nodes.isNotEmpty)
                 IconButton(
@@ -118,7 +124,11 @@ class _ProfilesSheet extends ConsumerWidget {
                   return _NodeTile(
                     node: n,
                     selected: selected,
-                    latencyMs: latency.results[n.tag],
+                    // Connected active node: prefer its real TCP ms, else the live
+                    // in-tunnel ping (so a hy2/tuic active node shows a number).
+                    latencyMs: (connected && selected)
+                        ? (latency.results[n.tag] ?? liveMs)
+                        : latency.results[n.tag],
                     measured: latency.measured(n.tag),
                     measuring: latency.isMeasuring(n.tag),
                     unverified: latency.isUnverified(n.tag),
@@ -140,23 +150,32 @@ class _ProfilesSheet extends ConsumerWidget {
                 },
               ),
             ),
+          // Admin mode has no live drag-hover overlay (Windows UIPI), so a
+          // persistent hint tells the user drag-drop still works there.
+          if (ref.watch(isElevatedProvider).value == true) ...[
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.file_download_outlined,
+                    size: 13, color: scheme.onSurface.withValues(alpha: 0.4)),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(l.adminDropHint,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: AppTheme.tsCaption,
+                          color: scheme.onSurface
+                              .withValues(alpha: AppTheme.alphaSecondary))),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
   }
 }
-
-Widget _grabber() => Center(
-      child: Container(
-        width: 38,
-        height: 4,
-        margin: const EdgeInsets.only(bottom: 14),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.25),
-          borderRadius: BorderRadius.circular(2),
-        ),
-      ),
-    );
 
 /// The "add profile" methods, shown in a centered glass dialog.
 class _AddMenu extends StatelessWidget {
@@ -414,7 +433,7 @@ class _ShareMenu extends StatelessWidget {
     Widget opt(IconData icon, String title, String desc, String value) =>
         InkWell(
           onTap: () => Navigator.pop(context, value),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppTheme.rButton),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
             child: Row(
@@ -427,11 +446,12 @@ class _ShareMenu extends StatelessWidget {
                     children: [
                       Text(title,
                           style: const TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w600)),
+                              fontSize: AppTheme.tsBody,
+                              fontWeight: FontWeight.w600)),
                       const SizedBox(height: 2),
                       Text(desc,
                           style: TextStyle(
-                              fontSize: 11,
+                              fontSize: AppTheme.tsCaption,
                               color: scheme.onSurface.withValues(alpha: 0.6))),
                     ],
                   ),
@@ -448,8 +468,8 @@ class _ShareMenu extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(18, 4, 18, 8),
           child: Text(l.shareTitle,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              style: const TextStyle(
+                  fontSize: AppTheme.tsHeading, fontWeight: FontWeight.w700)),
         ),
         opt(Icons.public_rounded, l.shareForAnyClient, l.shareForAnyClientDesc,
             'any'),
@@ -622,21 +642,21 @@ class _GlassFormDialog extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(title,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              style: const TextStyle(
+                  fontSize: AppTheme.tsHeading, fontWeight: FontWeight.w700)),
           const SizedBox(height: 14),
           field,
           const SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              GlassButton(
                   onPressed: () => Navigator.pop(context, false),
                   child: Text(l.cancel)),
               const SizedBox(width: 8),
-              FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: Text(confirmLabel)),
+              TgButton(
+                  label: confirmLabel,
+                  onPressed: () => Navigator.pop(context, true)),
             ],
           ),
         ],
@@ -654,7 +674,6 @@ class _ConfirmDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -662,20 +681,20 @@ class _ConfirmDialog extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(message,
-              style:
-                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              style: const TextStyle(
+                  fontSize: AppTheme.tsBody, fontWeight: FontWeight.w600)),
           const SizedBox(height: 18),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              GlassButton(
                   onPressed: () => Navigator.pop(context, false),
                   child: Text(l.cancel)),
               const SizedBox(width: 8),
-              FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  style: FilledButton.styleFrom(backgroundColor: scheme.error),
-                  child: Text(confirmLabel)),
+              TgButton(
+                  label: confirmLabel,
+                  tone: AppTheme.danger,
+                  onPressed: () => Navigator.pop(context, true)),
             ],
           ),
         ],
@@ -692,14 +711,14 @@ class _InsecureBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const amber = Color(0xFFE0A53D);
+    const amber = AppTheme.warning;
     return Tooltip(
       message: label,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: amber.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(AppTheme.rChip),
           border: Border.all(color: amber.withValues(alpha: 0.45)),
         ),
         child: Row(
@@ -709,7 +728,9 @@ class _InsecureBadge extends StatelessWidget {
             const SizedBox(width: 3),
             Text(label,
                 style: const TextStyle(
-                    fontSize: 9.5, fontWeight: FontWeight.w700, color: amber)),
+                    fontSize: AppTheme.tsMicro,
+                    fontWeight: FontWeight.w700,
+                    color: amber)),
           ],
         ),
       ),
@@ -719,6 +740,87 @@ class _InsecureBadge extends StatelessWidget {
 
 /// Green chip = this node's TLS certificate is PINNED (server verified, no longer
 /// trust-anything) — the inverse of [_InsecureBadge].
+/// The profile tile's ⋮ actions, in OUR glass action-sheet (matches the rest of
+/// the app's frosted sheets — not a stock Material popup).
+class _NodeActionsSheet extends StatelessWidget {
+  const _NodeActionsSheet({
+    required this.title,
+    required this.onRename,
+    required this.onDelete,
+    this.onView,
+    this.onPinCert,
+    this.onUnpin,
+    this.onShare,
+  });
+
+  final String title;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
+  final VoidCallback? onView;
+  final VoidCallback? onPinCert;
+  final VoidCallback? onUnpin;
+  final VoidCallback? onShare;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final scheme = Theme.of(context).colorScheme;
+
+    Widget row(IconData icon, String label, VoidCallback cb,
+        {Color? color, bool danger = false}) {
+      final c = danger ? AppTheme.danger : (color ?? scheme.onSurface);
+      return InkWell(
+        onTap: () {
+          Navigator.pop(context);
+          cb();
+        },
+        borderRadius: BorderRadius.circular(AppTheme.rPanel),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
+          child: Row(children: [
+            Icon(icon, size: 20, color: c),
+            const SizedBox(width: 16),
+            Text(label, style: TextStyle(fontSize: AppTheme.tsBody, color: c)),
+          ]),
+        ),
+      );
+    }
+
+    return Material(
+      color: Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // (grabber is provided by showGlassSheet itself now)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+              child: Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w700, fontSize: AppTheme.tsBody)),
+            ),
+            if (onView != null) row(Icons.code_rounded, l.viewConfig, onView!),
+            if (onPinCert != null)
+              row(Icons.verified_user_outlined, l.pinCertAction, onPinCert!),
+            if (onUnpin != null)
+              row(Icons.verified_user_rounded, l.unpinCertAction, onUnpin!,
+                  color: AppTheme.success),
+            if (onShare != null)
+              row(Icons.ios_share_rounded, l.shareTitle, onShare!),
+            row(Icons.edit_outlined, l.renameAction, onRename),
+            row(Icons.delete_outline_rounded, l.deleteAction, onDelete,
+                danger: true),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PinnedBadge extends StatelessWidget {
   const _PinnedBadge({required this.label});
 
@@ -726,14 +828,14 @@ class _PinnedBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const green = Color(0xFF3DDC97);
+    const green = AppTheme.success;
     return Tooltip(
       message: label,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: green.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(AppTheme.rChip),
           border: Border.all(color: green.withValues(alpha: 0.45)),
         ),
         child: Row(
@@ -743,7 +845,9 @@ class _PinnedBadge extends StatelessWidget {
             const SizedBox(width: 3),
             Text(label,
                 style: const TextStyle(
-                    fontSize: 9.5, fontWeight: FontWeight.w700, color: green)),
+                    fontSize: AppTheme.tsMicro,
+                    fontWeight: FontWeight.w700,
+                    color: green)),
           ],
         ),
       ),
@@ -771,26 +875,32 @@ class _LatencyChip extends StatelessWidget {
     late final Color color;
     late final Widget child;
     if (unverified) {
-      color = const Color(0xFFE0A53D);
+      color = AppTheme.warning;
       child = Text('?',
           style: TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w800, color: color));
+              fontSize: AppTheme.tsCaption,
+              fontWeight: FontWeight.w700,
+              color: color));
     } else if (ping != null) {
       color = ping < 150
-          ? const Color(0xFF3DDC97)
+          ? AppTheme.success
           : ping < 400
-              ? const Color(0xFFE0A53D)
-              : const Color(0xFFE05D5D);
+              ? AppTheme.warning
+              : AppTheme.danger;
       child = Text('$ping ms',
           style: TextStyle(
-              fontSize: 10.5, fontWeight: FontWeight.w700, color: color));
+              fontSize: AppTheme.tsCaption,
+              fontWeight: FontWeight.w700,
+              color: color));
     } else if (udp) {
       color = scheme.onSurface.withValues(alpha: 0.4);
       child = Text('UDP',
           style: TextStyle(
-              fontSize: 10.5, fontWeight: FontWeight.w700, color: color));
+              fontSize: AppTheme.tsCaption,
+              fontWeight: FontWeight.w700,
+              color: color));
     } else {
-      color = const Color(0xFFE05D5D);
+      color = AppTheme.danger;
       child = Icon(Icons.block_rounded, size: 12, color: color);
     }
     return Padding(
@@ -799,7 +909,7 @@ class _LatencyChip extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.13),
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(AppTheme.rChip),
           border: Border.all(color: color.withValues(alpha: 0.4)),
         ),
         child: child,
@@ -843,8 +953,13 @@ class _NodeTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final l = AppLocalizations.of(context);
+    // More info on the subtitle line: protocol · server:port (the user asked for
+    // a richer, readable row). Region/flag would need a bundled GeoIP — separate.
+    final ep = nodeEndpoint(node);
+    final sub =
+        ep != null ? '${node.type} · ${ep.host}:${ep.port}' : node.type;
     return ClipRRect(
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(AppTheme.rCard),
       child: Material(
         color: selected
             ? scheme.primary.withValues(alpha: 0.16)
@@ -853,7 +968,7 @@ class _NodeTile extends StatelessWidget {
           onTap: onTap,
           child: Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(AppTheme.rCard),
               border: Border.all(
                 color: selected
                     ? scheme.primary.withValues(alpha: 0.5)
@@ -882,11 +997,11 @@ class _NodeTile extends StatelessWidget {
                       Row(
                         children: [
                           Flexible(
-                            child: Text(node.type,
+                            child: Text(sub,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                    fontSize: 11,
+                                    fontSize: AppTheme.tsCaption,
                                     color: scheme.onSurface
                                         .withValues(alpha: 0.5))),
                           ),
@@ -917,55 +1032,25 @@ class _NodeTile extends StatelessWidget {
                     udp: nodeEndpoint(node)?.udp ?? false,
                     unverified: unverified,
                   ),
-                if (onView != null)
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    icon: Icon(Icons.code_rounded,
-                        size: 18,
-                        color: scheme.onSurface.withValues(alpha: 0.55)),
-                    onPressed: onView,
-                  ),
-                if (onPinCert != null)
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    tooltip: l.pinCertAction,
-                    icon: Icon(Icons.verified_user_outlined,
-                        size: 17, color: scheme.primary),
-                    onPressed: onPinCert,
-                  )
-                else if (onUnpin != null)
-                  // Green filled shield = certificate pinned (verified). Tap to
-                  // reverse a pin (e.g. a wrong cert that bricked the node).
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    tooltip: l.unpinCertAction,
-                    icon: const Icon(Icons.verified_user_rounded,
-                        size: 17, color: Color(0xFF3DDC97)),
-                    onPressed: onUnpin,
-                  ),
-                if (onShare != null)
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    tooltip: l.shareTitle,
-                    icon: Icon(Icons.ios_share_rounded,
-                        size: 17,
-                        color: scheme.onSurface.withValues(alpha: 0.55)),
-                    onPressed: onShare,
-                  ),
+                // All row actions live in OUR glass action-sheet (not a stock
+                // Material popup) so the row never overflows: select · name · ping · ⋮.
                 IconButton(
                   visualDensity: VisualDensity.compact,
-                  tooltip: l.renameAction,
-                  icon: Icon(Icons.edit_outlined,
-                      size: 17,
-                      color: scheme.onSurface.withValues(alpha: 0.45)),
-                  onPressed: onRename,
-                ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  icon: Icon(Icons.delete_outline_rounded,
-                      size: 18,
-                      color: scheme.onSurface.withValues(alpha: 0.45)),
-                  onPressed: onDelete,
+                  tooltip: l.moreActions,
+                  icon: Icon(Icons.more_vert_rounded,
+                      size: 18, color: scheme.onSurface.withValues(alpha: 0.55)),
+                  onPressed: () => showGlassSheet(
+                    context,
+                    child: _NodeActionsSheet(
+                      title: node.tag,
+                      onView: onView,
+                      onPinCert: onPinCert,
+                      onUnpin: onUnpin,
+                      onShare: onShare,
+                      onRename: onRename,
+                      onDelete: onDelete,
+                    ),
+                  ),
                 ),
               ],
             ),

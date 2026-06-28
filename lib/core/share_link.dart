@@ -65,6 +65,22 @@ class ShareLink {
     if (!text.contains('://')) {
       try {
         text = utf8.decode(base64.decode(_pad(text)));
+        // The decoded body may itself be a sing-box JSON / Clash YAML / WireGuard
+        // .conf (base64-wrapped). Re-run the structured detectors on it before the
+        // link regex — otherwise these formats yield ZERO nodes (the regex finds
+        // no `scheme://` links in a JSON/YAML/INI body).
+        if (text.startsWith('{') || text.contains('"outbounds"')) {
+          final fromJson = _fromSingBoxJson(text);
+          if (fromJson.isNotEmpty) return fromJson;
+        }
+        if (text.contains('proxies:')) {
+          final clash = _fromClashYaml(text);
+          if (clash.isNotEmpty) return clash;
+        }
+        if (text.toLowerCase().contains('[interface]')) {
+          final wg = _fromWireguardConf(text);
+          if (wg.isNotEmpty) return wg;
+        }
       } catch (_) {
         // not base64 — fall through
       }
@@ -131,7 +147,20 @@ class ShareLink {
     final pub = peer['publickey'];
     final endpoint = peer['endpoint'];
     if (priv == null || pub == null || endpoint == null) return const [];
-    final (host, port) = _hostPort(endpoint);
+    // A bad endpoint port (out of range) must not throw out of _reqPort and
+    // abort the WHOLE subscription/blob import (losing every other node) — drop
+    // just this WG conf, mirroring the empty-field guard above.
+    (String, int) hp;
+    try {
+      hp = _hostPort(endpoint);
+    } catch (_) {
+      return const [];
+    }
+    final (host, port) = hp;
+    // `[]:51820` / `:51820` parse to an EMPTY host without throwing — drop the
+    // conf rather than emit a malformed peer address that imports "green" then
+    // fails only at connect (every other invalid field is dropped at parse).
+    if (host.isEmpty) return const [];
     List<String> csv(String? v, String fallback) => (v == null || v.isEmpty)
         ? [fallback]
         : v.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
@@ -215,10 +244,30 @@ class ShareLink {
 
   static Map<String, dynamic>? _clashProxy(Map p) {
     String s(String k) => p[k]?.toString() ?? '';
-    final port = int.tryParse(p['port']?.toString() ?? '') ?? 443;
+    final rawPort = int.tryParse(p['port']?.toString() ?? '');
+    // A Clash entry with no server, or no valid 1..65535 port, can never connect
+    // — it would import "green" then fail at connect. Drop it for every type
+    // (parser skips a null proxy). Mirrors the bare-link _reqPort guard; coercing
+    // a bad port to 443 (the old behavior) masked a dead link as green.
+    if (s('server').isEmpty ||
+        rawPort == null ||
+        rawPort < 1 ||
+        rawPort > 65535) {
+      return null;
+    }
+    final port = rawPort;
     final name = s('name').isNotEmpty ? s('name') : '${s('server')}:$port';
     switch (s('type')) {
       case 'ss':
+        // 'none'/'plain' do no encryption or auth, so an empty password is valid
+        // there; every other method needs both fields.
+        final ssCipher = s('cipher');
+        if (ssCipher.isEmpty) return null;
+        if (s('password').isEmpty &&
+            ssCipher != 'none' &&
+            ssCipher != 'plain') {
+          return null;
+        }
         return {
           'type': 'shadowsocks',
           'tag': name,
@@ -228,6 +277,7 @@ class ShareLink {
           'password': s('password'),
         };
       case 'vmess':
+        if (s('uuid').isEmpty) return null;
         final ob = <String, dynamic>{
           'type': 'vmess',
           'tag': name,
@@ -242,6 +292,7 @@ class ShareLink {
         if (t != null) ob['transport'] = t;
         return ob;
       case 'vless':
+        if (s('uuid').isEmpty) return null;
         final reality = p['reality-opts'] != null;
         if (reality) {
           final ro = p['reality-opts'];
@@ -263,6 +314,7 @@ class ShareLink {
         if (t != null) ob['transport'] = t;
         return ob;
       case 'trojan':
+        if (s('password').isEmpty) return null;
         final ob = <String, dynamic>{
           'type': 'trojan',
           'tag': name,
@@ -275,6 +327,7 @@ class ShareLink {
         if (t != null) ob['transport'] = t;
         return ob;
       case 'hysteria2':
+        if (s('password').isEmpty) return null;
         final tls = <String, dynamic>{'enabled': true};
         if (s('sni').isNotEmpty) tls['server_name'] = s('sni');
         if (p['skip-cert-verify'] == true) tls['insecure'] = true;
@@ -291,6 +344,7 @@ class ShareLink {
         }
         return ob;
       case 'tuic':
+        if (s('uuid').isEmpty) return null;
         final tls = <String, dynamic>{'enabled': true};
         if (s('sni').isNotEmpty) tls['server_name'] = s('sni');
         if (p['skip-cert-verify'] == true) tls['insecure'] = true;
@@ -387,7 +441,7 @@ class ShareLink {
       'tag': name,
       'server': u.host,
       'server_port': _port(u),
-      'uuid': Uri.decodeComponent(u.userInfo),
+      'uuid': _c(Uri.decodeComponent(u.userInfo)),
     };
     final flow = p['flow'];
     if (flow != null && flow.isNotEmpty) ob['flow'] = flow;
@@ -404,6 +458,12 @@ class ShareLink {
         as Map<String, dynamic>;
     final server = _c(j['add']?.toString() ?? '');
     final port = int.tryParse(j['port']?.toString() ?? '') ?? 443;
+    final uuid = _c(j['id']?.toString() ?? '');
+    // A vmess link with no server or no uuid is a dead node — it would import
+    // "green" then FATAL the core at connect. Drop it (parse() skips throwers).
+    if (server.isEmpty || uuid.isEmpty) {
+      throw const FormatException('vmess: missing server or uuid');
+    }
     final ps = _c(j['ps']?.toString() ?? '');
     final name = ps.isNotEmpty ? ps : '$server:$port';
     final ob = <String, dynamic>{
@@ -411,7 +471,7 @@ class ShareLink {
       'tag': name,
       'server': server,
       'server_port': port,
-      'uuid': _c(j['id']?.toString() ?? ''),
+      'uuid': uuid,
       'security': (j['scy']?.toString().isNotEmpty ?? false)
           ? j['scy'].toString()
           : 'auto',
@@ -443,7 +503,7 @@ class ShareLink {
       'tag': name,
       'server': u.host,
       'server_port': _port(u),
-      'password': Uri.decodeComponent(u.userInfo),
+      'password': _c(Uri.decodeComponent(u.userInfo)),
     };
     if ((p['security'] ?? 'tls') != 'none') ob['tls'] = _tls(p);
     final t = _transport(p);
@@ -480,6 +540,9 @@ class ShareLink {
         user = Uri.decodeComponent(user);
       }
       final ci = user.indexOf(':');
+      // ci<1 = no colon (-1) or empty method (0) → malformed userinfo. Guard the
+      // substrings (a -1 would RangeError) and drop the dead node.
+      if (ci < 1) throw const FormatException('ss: malformed method:password');
       method = user.substring(0, ci);
       password = user.substring(ci + 1);
       (host, port) = _hostPort(body.substring(at + 1));
@@ -488,9 +551,15 @@ class ShareLink {
       final at = decoded.lastIndexOf('@');
       final user = decoded.substring(0, at);
       final ci = user.indexOf(':');
+      // ci<1 = no colon (-1) or empty method (0) → malformed userinfo. Guard the
+      // substrings (a -1 would RangeError) and drop the dead node.
+      if (ci < 1) throw const FormatException('ss: malformed method:password');
       method = user.substring(0, ci);
       password = user.substring(ci + 1);
       (host, port) = _hostPort(decoded.substring(at + 1));
+    }
+    if (host.isEmpty || method.isEmpty) {
+      throw const FormatException('ss: missing host or method');
     }
     if (name.isEmpty) name = '$host:$port';
     final ob = <String, dynamic>{
@@ -538,7 +607,7 @@ class ShareLink {
       'tag': name,
       'server': u.host,
       'server_port': _port(u),
-      'password': Uri.decodeComponent(u.userInfo),
+      'password': _c(Uri.decodeComponent(u.userInfo)),
       'tls': tls,
     };
     final obfs = p['obfs'];
@@ -584,7 +653,7 @@ class ShareLink {
   static ParsedNode _tuic(Uri u) {
     final p = _clean(u.queryParameters);
     final name = _name(u, '${u.host}:${_port(u)}');
-    final ui = Uri.decodeComponent(u.userInfo);
+    final ui = _c(Uri.decodeComponent(u.userInfo));
     final ci = ui.indexOf(':');
     final tls = <String, dynamic>{'enabled': true};
     if ((p['sni'] ?? '').isNotEmpty) tls['server_name'] = p['sni'];
@@ -614,7 +683,7 @@ class ShareLink {
   static ParsedNode _socks(Uri u) {
     final port = u.hasPort ? u.port : 1080;
     final name = _name(u, '${u.host}:$port');
-    final ui = Uri.decodeComponent(u.userInfo);
+    final ui = _c(Uri.decodeComponent(u.userInfo));
     final ci = ui.indexOf(':');
     final ob = <String, dynamic>{
       'type': 'socks',
@@ -647,7 +716,7 @@ class ShareLink {
         'tag': name,
         'server': u.host,
         'server_port': _port(u),
-        'password': Uri.decodeComponent(u.userInfo),
+        'password': _c(Uri.decodeComponent(u.userInfo)), // strip control chars
         'tls': tls,
       },
     );
@@ -782,8 +851,6 @@ class ShareLink {
     return p;
   }
 
-  static int _vp(int? p) => (p != null && p >= 1 && p <= 65535) ? p : 443;
-
   static String _name(Uri u, String fallback) =>
       _c(u.fragment.isEmpty ? fallback : Uri.decodeComponent(u.fragment));
 
@@ -799,7 +866,7 @@ class ShareLink {
         final host = s.substring(1, end);
         final rest = s.substring(end + 1);
         final colon = rest.indexOf(':');
-        final port = colon >= 0 ? _vp(int.tryParse(rest.substring(colon + 1))) : 443;
+        final port = colon >= 0 ? _reqPort(rest.substring(colon + 1)) : 443;
         return (host, port);
       }
     }
@@ -808,7 +875,18 @@ class ShareLink {
     // A bare IPv6 literal (multiple colons, no brackets) has no port — the last
     // colon is part of the address, not a separator.
     if (s.indexOf(':') != i) return (s, 443);
-    return (s.substring(0, i), _vp(int.tryParse(s.substring(i + 1))));
+    return (s.substring(0, i), _reqPort(s.substring(i + 1)));
+  }
+
+  // An explicit `:port` that's non-numeric or out of range can never connect.
+  // Throw (parse() turns it into a dropped node) instead of silently coercing
+  // to :443 — a wrong port masks a dead link as "green".
+  static int _reqPort(String s) {
+    final p = int.tryParse(s.trim());
+    if (p == null || p < 1 || p > 65535) {
+      throw const FormatException('port out of range');
+    }
+    return p;
   }
 
   static String _pad(String b64) {

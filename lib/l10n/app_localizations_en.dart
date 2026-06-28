@@ -21,6 +21,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get navSettings => 'Settings';
 
   @override
+  String get trayConnect => 'Connect';
+
+  @override
+  String get trayInsecureHint =>
+      'This server skips certificate checks — confirm it once in the app first.';
+
+  @override
+  String get trayDisconnect => 'Disconnect';
+
+  @override
+  String get trayShow => 'Show';
+
+  @override
+  String get trayQuit => 'Quit';
+
+  @override
   String get tabConnections => 'Connections';
 
   @override
@@ -55,6 +71,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'No servers yet. Paste a link, scan a QR, or open a file.';
 
   @override
+  String get adminDropHint =>
+      'Admin mode: drag a config / link onto the window — no hover highlight, but the import works.';
+
+  @override
   String get clipboardOfferText => 'A server link is on your clipboard';
 
   @override
@@ -79,6 +99,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get renameAction => 'Rename';
 
   @override
+  String get deleteAction => 'Delete';
+
+  @override
+  String get moreActions => 'More';
+
+  @override
   String get renameInvalid => 'Name is empty or already taken';
 
   @override
@@ -90,6 +116,16 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hardNetworkCtaDone => 'Hard-network mode on — reconnecting';
+
+  @override
+  String get hardNetworkCtaAlready => 'Hard-network mode is already on';
+
+  @override
+  String get hardNetworkCtaFailed =>
+      'Could not reconnect — try toggling off and on';
+
+  @override
+  String get updateOpenFailed => 'Could not open the download page';
 
   @override
   String get noProfile => 'No profile';
@@ -248,6 +284,9 @@ class AppLocalizationsEn extends AppLocalizations {
       'Fragments the TLS handshake to beat SNI-based DPI. Slightly slower.';
 
   @override
+  String get antiDpiForcedHint => 'Forced on by Hard-network mode';
+
+  @override
   String get maxResistTitle => 'Hard-network mode (mobile operator)';
 
   @override
@@ -259,7 +298,74 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get desyncDesc =>
-      'A packet-level engine that rewrites the outgoing TLS handshake so the censor can\'t read the site name (SNI) — unblocks throttled / TLS-DPI sites (YouTube, Discord, Rutracker…) with NO server. Needs administrator (loads a network driver). Doesn\'t help IP-blocked sites (Telegram, X) — those still need a server.';
+      'A packet-level engine that desyncs the outgoing TLS handshake so the censor can\'t read the site name (SNI) — unblocks throttled / SNI-DPI sites (YouTube, Discord, Rutracker…) right on your device, with NO server. Needs administrator (loads a network driver). Doesn\'t beat a full IP block — that still needs a server.';
+
+  @override
+  String get tgUnblockTitle => 'Telegram without a server';
+
+  @override
+  String get tgUnblockDesc =>
+      'Restores Telegram CALLS (blocked Aug 2025 by a packet signature) and steadies messaging, on-device — no server. Targets Telegram\'s own servers by address and fools the signature filter. Needs administrator. Media stays slow and the southern regions / full shutdowns still need a server — that\'s an IP block, not a signature.';
+
+  @override
+  String get tgWsTitle => 'Telegram without a server (experimental)';
+
+  @override
+  String get tgWsDesc =>
+      'Experimental, no server / no admin: re-wraps Telegram\'s traffic as an HTTPS connection to web.telegram.org to dodge the signature throttle. It may not carry a working session yet — test it before relying on it, and it can\'t beat a hard IP-block. Calls aren\'t covered here (use the toggle above).';
+
+  @override
+  String get tgWsHowto =>
+      'In Telegram → Settings → Advanced → Connection → SOCKS5, point it here, then turn your VPN off.';
+
+  @override
+  String get tgWsPathOk => 'web.telegram.org reachable (try sending a message)';
+
+  @override
+  String get tgWsPathFail =>
+      'web.telegram.org unreachable — your operator blocks it too (needs a server)';
+
+  @override
+  String get tgWsBlockedHint =>
+      'Your operator IP-blocks web.telegram.org — no serverless fix exists for media here. Your own clean exit IP routes Telegram (media too) around the block.';
+
+  @override
+  String get tgWsMakeServer => 'Create your own server for Telegram';
+
+  @override
+  String get tgNativeTitle => 'Telegram without a server (native)';
+
+  @override
+  String get tgNativeDesc =>
+      'A local engine (tgcore) that wraps Telegram in a WebSocket to its un-throttled web gateway, disguised as your real browser. No server. The bridge needs no administrator; calls do.';
+
+  @override
+  String get tgNativeOpenInTg => 'Open in Telegram';
+
+  @override
+  String get tgNativeRunning => 'Running — open the link in Telegram';
+
+  @override
+  String get tgNativeCapturing => 'Capturing your browser fingerprint…';
+
+  @override
+  String get tgNativeUnavailable =>
+      'Engine unavailable — binary missing or it stopped.';
+
+  @override
+  String get tgNativeCalls => 'Calls (desync, needs administrator)';
+
+  @override
+  String get tgNativeSetupFp => 'Match my browser';
+
+  @override
+  String get tgWsChecking => 'Checking the path…';
+
+  @override
+  String get tgWsRecheck => 'Re-check the path';
+
+  @override
+  String get tgWsConns => 'live';
 
   @override
   String get desyncActive => 'DPI bypass active';
@@ -273,7 +379,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Engine not installed — put winws.exe + WinDivert in core\\windows.';
 
   @override
-  String get desyncIdle => 'Engages when you connect.';
+  String get desyncIdle => 'Engaging — no connection needed.';
 
   @override
   String get desyncTryNext => 'Try next method';
@@ -415,6 +521,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get noConnections => 'No active connections';
 
   @override
+  String get connectionsConnect => 'Connect the VPN to see active connections.';
+
+  @override
   String connectionsActive(int count) {
     return '$count active';
   }
@@ -505,7 +614,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get importConfigProfile => 'sing-box config';
 
   @override
-  String get importExit => 'Default route';
+  String get importExit => 'Route';
 
   @override
   String get importRoutesDirect =>
@@ -926,7 +1035,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get echDesc =>
-      'Hide the TLS server name on non-Reality nodes. Needs server ECH support — turn off if a node won\'t connect.';
+      'Auto-discovers each node\'s published ECH config over DNS and hides the real TLS server name behind a cover name — like Chrome. Best for Cloudflare-fronted nodes; harmless when a node has none.';
 
   @override
   String get ecsTitle => 'DNS Client Subnet (ECS)';

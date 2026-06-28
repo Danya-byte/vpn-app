@@ -14,6 +14,7 @@ import '../../../core/format.dart';
 import '../../../core/profiles_controller.dart';
 import '../../../core/proxy_node.dart';
 import '../../../core/qr_decode.dart';
+import '../../../app/theme.dart';
 import '../../../core/share_link_encoder.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../widgets/app_toast.dart';
@@ -70,6 +71,8 @@ Future<void> applyImport(
   );
   final core = ref.read(coreControllerProvider.notifier);
   await core.restart(reason: 'import');
+  // restart() awaited: the widget may be gone — bail before touching ref/toast.
+  if (!context.mounted) return;
   // The success toast above mustn't be the last word if the tunnel never
   // came up — surface the real failure (bad node / rejected config).
   final status = ref.read(coreControllerProvider).status;
@@ -79,7 +82,8 @@ Future<void> applyImport(
     // The core is "running" (API alive) but a node can come up and carry ZERO
     // traffic (silent-dead) — probe end-to-end so the success isn't a lie (M6).
     final flowing = await core.probeTrafficFlowing();
-    if (!flowing && context.mounted) {
+    if (!context.mounted) return;
+    if (!flowing) {
       toast.message(l.importNoTraffic, kind: ToastKind.error);
     }
   }
@@ -350,7 +354,7 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
     String? cfgFinal;
     if (n != null && n.isConfig) {
       final cfg = n.config!;
-      final outs = ((cfg['outbounds'] as List?) ?? const []).whereType<Map>();
+      final outs = _asList(cfg['outbounds']).whereType<Map>();
       final servers = outs.map((o) => o['server']).whereType<String>().toSet();
       if (servers.isNotEmpty) cfgServers = servers.join(', ');
       final route = cfg['route'];
@@ -456,12 +460,9 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
             ),
           ],
           const SizedBox(height: 16),
-          Container(
+          GlassCard(
+            radius: 12,
             padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: scheme.error.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(12),
-            ),
             child: Text(
               l.importExternalWarning,
               style: TextStyle(
@@ -475,16 +476,17 @@ class _BundleImportDialogState extends State<_BundleImportDialog> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              GlassButton(
                 onPressed: () =>
                     Navigator.pop(context, const _BundleChoice(false, false)),
                 child: Text(l.cancel),
               ),
               const SizedBox(width: 8),
-              FilledButton(
+              TgButton(
+                tone: AppTheme.danger,
+                label: l.importConnectAction,
                 onPressed: () =>
                     Navigator.pop(context, _BundleChoice(true, _applySettings)),
-                child: Text(l.importConnectAction),
               ),
             ],
           ),
@@ -544,7 +546,7 @@ class _ImportPreview extends StatelessWidget {
       // DIRECT. A hostile config that sends all traffic direct = zero protection
       // + deanonymisation, and would otherwise look identical to a real one.
       final cfg = n.config!;
-      final outs = ((cfg['outbounds'] as List?) ?? const []).whereType<Map>();
+      final outs = _asList(cfg['outbounds']).whereType<Map>();
       final route = cfg['route'];
       final finalTag = (route is Map ? route['final'] : null)?.toString();
       final servers = outs.map((o) => o['server']).whereType<String>().toSet();
@@ -585,12 +587,9 @@ class _ImportPreview extends StatelessWidget {
             _InsecureWarn(label: l.amneziaNoBridge),
           ],
           const SizedBox(height: 14),
-          Container(
+          GlassCard(
+            radius: 12,
             padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: scheme.error.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(12),
-            ),
             child: Text(
               l.importExternalWarning,
               style: TextStyle(
@@ -604,14 +603,15 @@ class _ImportPreview extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              GlassButton(
                 onPressed: () => Navigator.pop(context, false),
                 child: Text(l.cancel),
               ),
               const SizedBox(width: 8),
-              FilledButton(
+              TgButton(
+                tone: AppTheme.danger,
+                label: l.importConnectAction,
                 onPressed: () => Navigator.pop(context, true),
-                child: Text(l.importConnectAction),
               ),
             ],
           ),
@@ -671,14 +671,15 @@ class _ConsentDialog extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              GlassButton(
                 onPressed: () => Navigator.pop(context, false),
                 child: Text(l.cancel),
               ),
               const SizedBox(width: 8),
-              FilledButton(
+              TgButton(
+                tone: AppTheme.danger,
+                label: confirmLabel,
                 onPressed: () => Navigator.pop(context, true),
-                child: Text(confirmLabel),
               ),
             ],
           ),
@@ -696,18 +697,21 @@ class _InsecureWarn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const amber = Color(0xFFE0A53D);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.gpp_maybe_rounded, size: 16, color: amber),
+        const Icon(
+          Icons.gpp_maybe_rounded,
+          size: 16,
+          color: AppTheme.warning,
+        ),
         const SizedBox(width: 6),
         Flexible(
           child: Text(
             label,
             style: const TextStyle(
               fontSize: 12.5,
-              color: amber,
+              color: AppTheme.warning,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -743,6 +747,12 @@ bool _transportWidelyBlockedNode(ParsedNode n) {
 /// (the handshake never completes). The honest pre-connect signal so a user isn't
 /// left guessing why "it won't connect / ping never measures" (a plain WG .conf,
 /// by contrast, works natively).
+
+// A hostile / hand-edited config may carry outbounds/rules as a Map/String/
+// number — a bare `as List` would throw a TypeError inside the import-preview
+// build(), crashing the very safety gate. Any non-List degrades to empty.
+List _asList(Object? v) => v is List ? v : const [];
+
 bool _amneziaNeedsBridge(ParsedNode n) {
   if (!n.isConfig) return false;
   // `endpoints` is verbatim from an imported config and is NOT validated upstream
@@ -768,9 +778,7 @@ bool _configRoutesDirect(Map cfg) {
     'http',
     'wireguard',
   };
-  final outs = ((cfg['outbounds'] as List?) ?? const [])
-      .whereType<Map>()
-      .toList();
+  final outs = _asList(cfg['outbounds']).whereType<Map>().toList();
   if (!outs.any((o) => proxyTypes.contains(o['type']))) {
     return true; // no proxy at all
   }
@@ -789,7 +797,7 @@ bool _configRoutesDirect(Map cfg) {
     final t = o['type']?.toString();
     if (t == 'selector' || t == 'urltest') {
       final members =
-          (o['outbounds'] as List?)?.whereType<String>().toList() ?? const [];
+          _asList(o['outbounds']).whereType<String>().toList();
       final def =
           o['default']?.toString() ??
           (members.isNotEmpty ? members.first : null);
@@ -839,7 +847,7 @@ bool _configRoutesDirect(Map cfg) {
   }
 
   final rules =
-      (route['rules'] as List?)?.whereType<Map>().toList() ?? const <Map>[];
+      _asList(route['rules']).whereType<Map>().toList();
   for (final r in rules) {
     final tgt = leaf(r['outbound']?.toString());
     if (tgt != 'direct' && tgt != 'block') continue;

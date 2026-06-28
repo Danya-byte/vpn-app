@@ -147,8 +147,9 @@ bool Win32Window::Create(const std::wstring& title,
 
   UpdateTheme(window);
 
-  // Square corners on Windows 11 (33=corner-preference attr, 1=DONOTROUND); no-op on Win10.
-  const DWORD corner_preference = 1;
+  // Rounded window corners on Windows 11, like Telegram Desktop
+  // (33 = DWMWA_WINDOW_CORNER_PREFERENCE, 2 = DWMWCP_ROUND); no-op on Win10.
+  const DWORD corner_preference = 2;
   DwmSetWindowAttribute(window, 33, &corner_preference, sizeof(corner_preference));
 
   return OnCreate();

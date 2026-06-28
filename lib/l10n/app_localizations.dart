@@ -122,6 +122,36 @@ abstract class AppLocalizations {
   /// **'Settings'**
   String get navSettings;
 
+  /// No description provided for @trayConnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect'**
+  String get trayConnect;
+
+  /// No description provided for @trayInsecureHint.
+  ///
+  /// In en, this message translates to:
+  /// **'This server skips certificate checks — confirm it once in the app first.'**
+  String get trayInsecureHint;
+
+  /// No description provided for @trayDisconnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Disconnect'**
+  String get trayDisconnect;
+
+  /// No description provided for @trayShow.
+  ///
+  /// In en, this message translates to:
+  /// **'Show'**
+  String get trayShow;
+
+  /// No description provided for @trayQuit.
+  ///
+  /// In en, this message translates to:
+  /// **'Quit'**
+  String get trayQuit;
+
   /// No description provided for @tabConnections.
   ///
   /// In en, this message translates to:
@@ -188,6 +218,12 @@ abstract class AppLocalizations {
   /// **'No servers yet. Paste a link, scan a QR, or open a file.'**
   String get profilesEmpty;
 
+  /// No description provided for @adminDropHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Admin mode: drag a config / link onto the window — no hover highlight, but the import works.'**
+  String get adminDropHint;
+
   /// No description provided for @clipboardOfferText.
   ///
   /// In en, this message translates to:
@@ -230,6 +266,18 @@ abstract class AppLocalizations {
   /// **'Rename'**
   String get renameAction;
 
+  /// No description provided for @deleteAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get deleteAction;
+
+  /// No description provided for @moreActions.
+  ///
+  /// In en, this message translates to:
+  /// **'More'**
+  String get moreActions;
+
   /// No description provided for @renameInvalid.
   ///
   /// In en, this message translates to:
@@ -253,6 +301,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Hard-network mode on — reconnecting'**
   String get hardNetworkCtaDone;
+
+  /// No description provided for @hardNetworkCtaAlready.
+  ///
+  /// In en, this message translates to:
+  /// **'Hard-network mode is already on'**
+  String get hardNetworkCtaAlready;
+
+  /// No description provided for @hardNetworkCtaFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not reconnect — try toggling off and on'**
+  String get hardNetworkCtaFailed;
+
+  /// No description provided for @updateOpenFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open the download page'**
+  String get updateOpenFailed;
 
   /// No description provided for @noProfile.
   ///
@@ -548,6 +614,12 @@ abstract class AppLocalizations {
   /// **'Fragments the TLS handshake to beat SNI-based DPI. Slightly slower.'**
   String get antiDpiDesc;
 
+  /// No description provided for @antiDpiForcedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Forced on by Hard-network mode'**
+  String get antiDpiForcedHint;
+
   /// No description provided for @maxResistTitle.
   ///
   /// In en, this message translates to:
@@ -569,8 +641,128 @@ abstract class AppLocalizations {
   /// No description provided for @desyncDesc.
   ///
   /// In en, this message translates to:
-  /// **'A packet-level engine that rewrites the outgoing TLS handshake so the censor can\'t read the site name (SNI) — unblocks throttled / TLS-DPI sites (YouTube, Discord, Rutracker…) with NO server. Needs administrator (loads a network driver). Doesn\'t help IP-blocked sites (Telegram, X) — those still need a server.'**
+  /// **'A packet-level engine that desyncs the outgoing TLS handshake so the censor can\'t read the site name (SNI) — unblocks throttled / SNI-DPI sites (YouTube, Discord, Rutracker…) right on your device, with NO server. Needs administrator (loads a network driver). Doesn\'t beat a full IP block — that still needs a server.'**
   String get desyncDesc;
+
+  /// No description provided for @tgUnblockTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Telegram without a server'**
+  String get tgUnblockTitle;
+
+  /// No description provided for @tgUnblockDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Restores Telegram CALLS (blocked Aug 2025 by a packet signature) and steadies messaging, on-device — no server. Targets Telegram\'s own servers by address and fools the signature filter. Needs administrator. Media stays slow and the southern regions / full shutdowns still need a server — that\'s an IP block, not a signature.'**
+  String get tgUnblockDesc;
+
+  /// No description provided for @tgWsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Telegram without a server (experimental)'**
+  String get tgWsTitle;
+
+  /// No description provided for @tgWsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Experimental, no server / no admin: re-wraps Telegram\'s traffic as an HTTPS connection to web.telegram.org to dodge the signature throttle. It may not carry a working session yet — test it before relying on it, and it can\'t beat a hard IP-block. Calls aren\'t covered here (use the toggle above).'**
+  String get tgWsDesc;
+
+  /// No description provided for @tgWsHowto.
+  ///
+  /// In en, this message translates to:
+  /// **'In Telegram → Settings → Advanced → Connection → SOCKS5, point it here, then turn your VPN off.'**
+  String get tgWsHowto;
+
+  /// No description provided for @tgWsPathOk.
+  ///
+  /// In en, this message translates to:
+  /// **'web.telegram.org reachable (try sending a message)'**
+  String get tgWsPathOk;
+
+  /// No description provided for @tgWsPathFail.
+  ///
+  /// In en, this message translates to:
+  /// **'web.telegram.org unreachable — your operator blocks it too (needs a server)'**
+  String get tgWsPathFail;
+
+  /// No description provided for @tgWsBlockedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Your operator IP-blocks web.telegram.org — no serverless fix exists for media here. Your own clean exit IP routes Telegram (media too) around the block.'**
+  String get tgWsBlockedHint;
+
+  /// No description provided for @tgWsMakeServer.
+  ///
+  /// In en, this message translates to:
+  /// **'Create your own server for Telegram'**
+  String get tgWsMakeServer;
+
+  /// No description provided for @tgNativeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Telegram without a server (native)'**
+  String get tgNativeTitle;
+
+  /// No description provided for @tgNativeDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'A local engine (tgcore) that wraps Telegram in a WebSocket to its un-throttled web gateway, disguised as your real browser. No server. The bridge needs no administrator; calls do.'**
+  String get tgNativeDesc;
+
+  /// No description provided for @tgNativeOpenInTg.
+  ///
+  /// In en, this message translates to:
+  /// **'Open in Telegram'**
+  String get tgNativeOpenInTg;
+
+  /// No description provided for @tgNativeRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running — open the link in Telegram'**
+  String get tgNativeRunning;
+
+  /// No description provided for @tgNativeCapturing.
+  ///
+  /// In en, this message translates to:
+  /// **'Capturing your browser fingerprint…'**
+  String get tgNativeCapturing;
+
+  /// No description provided for @tgNativeUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Engine unavailable — binary missing or it stopped.'**
+  String get tgNativeUnavailable;
+
+  /// No description provided for @tgNativeCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Calls (desync, needs administrator)'**
+  String get tgNativeCalls;
+
+  /// No description provided for @tgNativeSetupFp.
+  ///
+  /// In en, this message translates to:
+  /// **'Match my browser'**
+  String get tgNativeSetupFp;
+
+  /// No description provided for @tgWsChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking the path…'**
+  String get tgWsChecking;
+
+  /// No description provided for @tgWsRecheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Re-check the path'**
+  String get tgWsRecheck;
+
+  /// No description provided for @tgWsConns.
+  ///
+  /// In en, this message translates to:
+  /// **'live'**
+  String get tgWsConns;
 
   /// No description provided for @desyncActive.
   ///
@@ -593,7 +785,7 @@ abstract class AppLocalizations {
   /// No description provided for @desyncIdle.
   ///
   /// In en, this message translates to:
-  /// **'Engages when you connect.'**
+  /// **'Engaging — no connection needed.'**
   String get desyncIdle;
 
   /// No description provided for @desyncTryNext.
@@ -842,6 +1034,12 @@ abstract class AppLocalizations {
   /// **'No active connections'**
   String get noConnections;
 
+  /// No description provided for @connectionsConnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect the VPN to see active connections.'**
+  String get connectionsConnect;
+
   /// No description provided for @connectionsActive.
   ///
   /// In en, this message translates to:
@@ -1001,7 +1199,7 @@ abstract class AppLocalizations {
   /// No description provided for @importExit.
   ///
   /// In en, this message translates to:
-  /// **'Default route'**
+  /// **'Route'**
   String get importExit;
 
   /// No description provided for @importRoutesDirect.
@@ -1739,7 +1937,7 @@ abstract class AppLocalizations {
   /// No description provided for @echDesc.
   ///
   /// In en, this message translates to:
-  /// **'Hide the TLS server name on non-Reality nodes. Needs server ECH support — turn off if a node won\'t connect.'**
+  /// **'Auto-discovers each node\'s published ECH config over DNS and hides the real TLS server name behind a cover name — like Chrome. Best for Cloudflare-fronted nodes; harmless when a node has none.'**
   String get echDesc;
 
   /// No description provided for @ecsTitle.

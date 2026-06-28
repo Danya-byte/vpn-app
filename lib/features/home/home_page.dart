@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart'; // StateProvider (Riverpod 3)
 
+import '../../app/theme.dart';
 import '../../core/app_settings.dart';
 import '../../core/core_controller.dart';
 import '../../core/deeplink.dart' show importablePayload;
@@ -45,7 +46,7 @@ class HomePage extends ConsumerWidget {
     // a log line or detail change doesn't rebuild the entire Home column.
     return Padding(
       // bottom clears the floating nav (~76 bar + 12 margin).
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, AppTheme.kNavReserve),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -140,14 +141,24 @@ class _UpdateBanner extends ConsumerWidget {
             const SizedBox(width: 8),
             TgButton(
                 label: l.updateNow,
-                onPressed: () => NativeAdmin.openUrl(update.url)),
-            IconButton(
-              icon: const Icon(Icons.close_rounded, size: 18),
-              visualDensity: VisualDensity.compact,
-              tooltip: l.cancel,
-              onPressed: () => ref
-                  .read(_updateDismissedProvider.notifier)
-                  .state = update.version,
+                onPressed: () async {
+                  // Capture the toast before the await — it's the user's only
+                  // signal if ShellExecute fails (a swallowed error used to leave
+                  // a dead button).
+                  final toast = AppToast.of(context);
+                  final ok = await NativeAdmin.openUrl(update.url);
+                  if (!ok) toast.error(l.updateOpenFailed);
+                }),
+            const SizedBox(width: 4),
+            Tooltip(
+              message: l.cancel,
+              child: GlassButton(
+                padding: const EdgeInsets.all(8),
+                onPressed: () => ref
+                    .read(_updateDismissedProvider.notifier)
+                    .state = update.version,
+                child: const Icon(Icons.close_rounded, size: 18),
+              ),
             ),
           ],
         ),
@@ -179,19 +190,24 @@ class _ClipboardImportBanner extends ConsumerWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(l.clipboardOfferText,
-                  style: const TextStyle(fontSize: 12.5),
+                  style: const TextStyle(fontSize: AppTheme.tsBody),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis),
             ),
-            TextButton(
+            TgButton(
+              label: l.importAction,
               onPressed: () async {
                 final p = importablePayload(payload);
+                // Capture the profile node-count BEFORE clearing the offer and
+                // BEFORE the await — `ref` must not be read after the widget that
+                // owns it has been torn down by the banner hide / an unmount during
+                // the async import.
+                final before = ref.read(profilesProvider).nodes.length;
                 // Hide the banner now but DON'T latch yet — the preview-gate may be
                 // cancelled, and latching here would permanently suppress a link the
                 // user wanted to retry.
                 clearClipboardOffer(ref, latch: false);
                 if (p == null) return;
-                final before = ref.read(profilesProvider).nodes.length;
                 // Untrusted source (clipboard) → the import preview-gate decides.
                 // Clipboard text is always CONTENT, never a file path — and an
                 // unwrapped payload may legitimately lack '://' (hiddify://import/
@@ -199,19 +215,22 @@ class _ClipboardImportBanner extends ConsumerWidget {
                 // would misread as a path and fail with a load error.
                 await importDroppedContent(context, ref, utf8.encode(p),
                     trusted: false);
+                if (!context.mounted) return;
                 // Only suppress re-offers once the import actually added node(s); a
                 // cancelled preview leaves the count unchanged → stays re-offerable.
                 if (ref.read(profilesProvider).nodes.length != before) {
                   markClipboardImported(payload);
                 }
               },
-              child: Text(l.importAction),
             ),
-            IconButton(
-              icon: const Icon(Icons.close_rounded, size: 18),
-              visualDensity: VisualDensity.compact,
-              tooltip: l.cancel,
-              onPressed: () => clearClipboardOffer(ref),
+            const SizedBox(width: 4),
+            Tooltip(
+              message: l.cancel,
+              child: GlassButton(
+                padding: const EdgeInsets.all(8),
+                onPressed: () => clearClipboardOffer(ref),
+                child: const Icon(Icons.close_rounded, size: 18),
+              ),
             ),
           ],
         ),
@@ -249,7 +268,7 @@ class _ActiveServerLabel extends ConsumerWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                    fontSize: 12.5,
+                    fontSize: AppTheme.tsBody,
                     fontWeight: FontWeight.w600,
                     color: scheme.onSurface.withValues(alpha: 0.78))),
           ),
@@ -273,7 +292,7 @@ class _FenceBadge extends ConsumerWidget {
         ref.watch(coreControllerProvider.select((s) => s.fenceActive));
     if (fenceActive) {
       return const _FenceChip(
-        color: Color(0xFF4ADE80),
+        color: AppTheme.success,
         icon: Icons.shield_rounded,
         labelKey: _FenceLabel.active,
       );
@@ -284,7 +303,7 @@ class _FenceBadge extends ConsumerWidget {
         .select((s) => s.killSwitchTun && s.vpnMode == VpnMode.tun));
     if (wantFence) {
       return const _FenceChip(
-        color: Color(0xFFE0A53D),
+        color: AppTheme.warning,
         icon: Icons.gpp_bad_rounded,
         labelKey: _FenceLabel.unprotected,
       );
@@ -308,43 +327,51 @@ class _WhitelistBanner extends ConsumerWidget {
         .select((s) => s.isOn && s.whitelistMode));
     if (!show) return const SizedBox.shrink();
     final l = AppLocalizations.of(context);
-    const amber = Color(0xFFE0A53D);
+    const amber = AppTheme.warning;
     return Padding(
       padding: const EdgeInsets.only(top: 12),
-      child: Container(
+      child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 320),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: amber.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: amber.withValues(alpha: 0.45)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.public_off_rounded, size: 15, color: amber),
-                const SizedBox(width: 6),
-                Text(l.whitelistModeTitle,
-                    style: const TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w700,
-                        color: amber)),
-              ],
+        child: GlassCard(
+          radius: 12,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: amber.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: amber.withValues(alpha: 0.45)),
             ),
-            const SizedBox(height: 4),
-            Text(l.whitelistModeBody,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 11,
-                    height: 1.35,
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withValues(alpha: 0.7))),
-          ],
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.public_off_rounded,
+                          size: 15, color: amber),
+                      const SizedBox(width: 6),
+                      Text(l.whitelistModeTitle,
+                          style: const TextStyle(
+                              fontSize: AppTheme.tsBody,
+                              fontWeight: FontWeight.w700,
+                              color: amber)),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(l.whitelistModeBody,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 11,
+                          height: 1.35,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.7))),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -368,54 +395,82 @@ class _HardNetworkCta extends ConsumerWidget {
         !ref.watch(settingsProvider.select((s) => s.maxResistance));
     if (!dark || !canEscalate) return const SizedBox.shrink();
     final l = AppLocalizations.of(context);
-    const amber = Color(0xFFE0A53D);
+    const amber = AppTheme.warning;
     return Padding(
       padding: const EdgeInsets.only(top: 12),
-      child: Container(
+      child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 320),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: amber.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: amber.withValues(alpha: 0.4)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(l.hardNetworkCtaText,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 11.5,
-                    height: 1.35,
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withValues(alpha: 0.75))),
-            const SizedBox(height: 8),
-            GlassButton(
-              onPressed: () async {
-                final changed =
-                    ref.read(settingsProvider.notifier).enableHardNetwork();
-                if (!changed) return;
-                // On a default install antiDpi+autoAdapt are already on, so flipping
-                // maxResistance leaves the generated config byte-identical → the
-                // settings-watcher schedules NO restart and the escalation would
-                // silently do nothing while the toast claims "reconnecting". Force a
-                // genuine reconnect so the tunnel actually re-dials (fresh cascade +
-                // fp cycle under maxResistance) — the CTA exists precisely for the
-                // dark state, where re-attempting the connection is the whole point.
-                if (ref.read(coreControllerProvider).isOn) {
-                  await ref
-                      .read(coreControllerProvider.notifier)
-                      .restart(reason: 'hard network escalation');
-                }
-                if (context.mounted) {
-                  AppToast.of(context).message(l.hardNetworkCtaDone);
-                }
-              },
-              child: Text(l.hardNetworkCtaAction),
+        child: GlassCard(
+          radius: 12,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: amber.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: amber.withValues(alpha: 0.4)),
             ),
-          ],
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(l.hardNetworkCtaText,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: AppTheme.tsCaption,
+                          height: 1.35,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.75))),
+                  const SizedBox(height: 8),
+                  GlassButton(
+                    onPressed: () async {
+                      // Capture the messenger + core notifier BEFORE any await so
+                      // we never touch `ref`/`context` across an unmount.
+                      final toast = AppToast.of(context);
+                      final core = ref.read(coreControllerProvider.notifier);
+                      final wasOn = ref.read(coreControllerProvider).isOn;
+                      final changed = ref
+                          .read(settingsProvider.notifier)
+                          .enableHardNetwork();
+                      // Already escalated — flipping nothing would leave the user
+                      // staring at an unresponsive button; say so instead of a
+                      // silent no-op.
+                      if (!changed) {
+                        toast.message(l.hardNetworkCtaAlready);
+                        return;
+                      }
+                      // On a default install antiDpi+autoAdapt are already on, so
+                      // flipping maxResistance leaves the generated config
+                      // byte-identical → the settings-watcher schedules NO restart
+                      // and the escalation would silently do nothing while the toast
+                      // claims "reconnecting". Force a genuine reconnect so the
+                      // tunnel actually re-dials (fresh cascade + fp cycle under
+                      // maxResistance) — the CTA exists precisely for the dark
+                      // state, where re-attempting the connection is the whole point.
+                      if (wasOn) {
+                        try {
+                          await core.restart(
+                              reason: 'hard network escalation');
+                        } catch (_) {
+                          // A failed restart must not throw into the framework —
+                          // tell the user it didn't take.
+                          if (context.mounted) {
+                            toast.error(l.hardNetworkCtaFailed);
+                          }
+                          return;
+                        }
+                      }
+                      if (context.mounted) {
+                        toast.message(l.hardNetworkCtaDone);
+                      }
+                    },
+                    child: Text(l.hardNetworkCtaAction),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -449,8 +504,9 @@ class _ProxyModeHint extends ConsumerWidget {
             child: Text(l.proxyModeLeakHint,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    fontSize: 10.5,
-                    color: scheme.onSurface.withValues(alpha: 0.45))),
+                    fontSize: AppTheme.tsCaption,
+                    color: scheme.onSurface
+                        .withValues(alpha: AppTheme.alphaSecondary))),
           ),
         ],
       ),
@@ -480,14 +536,14 @@ class _UnblockButton extends ConsumerWidget {
           Text(l.unblockHint,
               textAlign: TextAlign.center,
               style: TextStyle(
-                  fontSize: 11.5,
+                  fontSize: AppTheme.tsCaption,
                   color: scheme.onSurface.withValues(alpha: 0.7))),
           const SizedBox(height: 8),
-          FilledButton.icon(
+          TgButton(
+            label: l.unblockAction,
+            icon: Icons.lock_open_rounded,
+            tone: AppTheme.danger,
             onPressed: () => ref.read(coreControllerProvider.notifier).stop(),
-            style: FilledButton.styleFrom(backgroundColor: scheme.error),
-            icon: const Icon(Icons.lock_open_rounded, size: 18),
-            label: Text(l.unblockAction),
           ),
         ],
       ),
@@ -548,26 +604,8 @@ class _HomeTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final l = AppLocalizations.of(context);
-    return Row(
-      children: [
-        Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [scheme.primary, scheme.primary.withValues(alpha: 0.6)],
-            ),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: const Icon(Icons.shield_rounded, color: Colors.black, size: 20),
-        ),
-        const SizedBox(width: 10),
-        Text(l.appTitle,
-            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-      ],
-    );
+    return PageHeader(icon: Icons.shield_rounded, title: l.appTitle);
   }
 }
 
@@ -663,12 +701,12 @@ class _StatusLabel extends ConsumerWidget {
     final (String label, Color color) = switch (status) {
       // Up but carrying no traffic (watchdog dark window) — don't claim a solid
       // "Connected"; show an honest amber "checking" until it recovers or acts.
-      CoreStatus.running when dark => (l.statusChecking, const Color(0xFFE0A53D)),
+      CoreStatus.running when dark => (l.statusChecking, AppTheme.warning),
       CoreStatus.running => (l.statusConnected, scheme.primary),
       // A swap (node-switch / network / settings restart) keeps the proxy pinned —
       // show a calm amber "Checking…", not the "Connecting…" of a fresh connect.
       CoreStatus.starting when swapping =>
-        (l.statusChecking, const Color(0xFFE0A53D)),
+        (l.statusChecking, AppTheme.warning),
       CoreStatus.starting => (l.statusConnecting, scheme.onSurface),
       CoreStatus.stopping => (l.statusDisconnecting, scheme.onSurface),
       CoreStatus.error => (l.statusError, scheme.error),
@@ -687,7 +725,9 @@ class _StatusLabel extends ConsumerWidget {
       children: [
         Text(label,
             style: TextStyle(
-                fontSize: 22, fontWeight: FontWeight.w600, color: color)),
+                fontSize: AppTheme.tsTitle,
+                fontWeight: FontWeight.w600,
+                color: color)),
         if (msg != null) ...[
           const SizedBox(height: 8),
           ConstrainedBox(
@@ -752,7 +792,7 @@ class _PingLabel extends ConsumerWidget {
     }
     final color = ms < 200
         ? scheme.primary
-        : (ms < 500 ? Colors.orange : scheme.error);
+        : (ms < 500 ? AppTheme.warning : scheme.error);
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -760,7 +800,9 @@ class _PingLabel extends ConsumerWidget {
         const SizedBox(width: 5),
         Text('$ms ms',
             style: TextStyle(
-                fontSize: 17, fontWeight: FontWeight.w700, color: color)),
+                fontSize: AppTheme.tsHeading,
+                fontWeight: FontWeight.w700,
+                color: color)),
       ],
     );
   }

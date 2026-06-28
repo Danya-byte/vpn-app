@@ -26,4 +26,17 @@ class SystemProxy {
       await _ch.invokeMethod('clearProxy');
     } catch (_) {}
   }
+
+  /// Entering TUN mode: TUN captures every app transparently, so SUSPEND any
+  /// leftover loopback system proxy — ours from a prior proxy-mode session, or
+  /// another local VPN's (e.g. Hiddify on 127.0.0.1:12334). Left set, it hijacks
+  /// proxy-aware apps (Chrome / Edge / Electron — the Claude desktop app) into a
+  /// broken double-hop or a dead port. The native side backs up a user-set proxy
+  /// so disconnect restores it (only if it's still alive). No-op when no proxy is
+  /// set, and on non-Windows / in tests.
+  static Future<void> clearForTun() async {
+    try {
+      await _ch.invokeMethod('clearProxyForTun');
+    } catch (_) {}
+  }
 }

@@ -141,13 +141,18 @@ class ServerGen {
       ],
     };
 
+    // A bare IPv6 server address MUST be bracketed in a URL authority, else the
+    // ':' run makes the link unparseable and it silently won't import.
+    final host = serverIp.contains(':') && !serverIp.startsWith('[')
+        ? '[$serverIp]'
+        : serverIp;
     final links = <String>[
-      'vless://$uuid@$serverIp:$port'
+      'vless://$uuid@$host:$port'
           '?security=reality&sni=$sni&pbk=$publicKey&sid=$shortId'
           '&fp=chrome&flow=xtls-rprx-vision&type=tcp'
           '#${Uri.encodeComponent('$name · Reality')}',
       if (hy2)
-        'hysteria2://$hy2Password@$serverIp:$hy2Port'
+        'hysteria2://$hy2Password@$host:$hy2Port'
             '?obfs=salamander&obfs-password=$obfsPassword&insecure=1&sni=$sni'
             '#${Uri.encodeComponent('$name · Hysteria2')}',
     ];
@@ -219,10 +224,24 @@ class ServerGen {
     // Both ends are ordinary VLESS+Reality servers (decrypt + forward via
     // direct). The two-hop topology lives entirely in the CLIENT config's
     // `detour` — neither server needs to know about the other.
+    // The relay leg carries the EXIT's own Reality+VLESS tunnel as its payload, so
+    // XTLS-Vision splicing doesn't apply (and breaks the nested handshake). Vision
+    // belongs only on a single outermost hop — drop it from BOTH the relay server
+    // users and the client relay outbound below (the exit already runs vision:false).
     final relayServer = _realityServer(
-        uuid: relayUuid, priv: relayPriv, sid: relayShortId, sni: relaySni, port: relayPort);
+        uuid: relayUuid,
+        priv: relayPriv,
+        sid: relayShortId,
+        sni: relaySni,
+        port: relayPort,
+        vision: false);
     final exitServer = _realityServer(
-        uuid: exitUuid, priv: exitPriv, sid: exitShortId, sni: exitSni, port: exitPort);
+        uuid: exitUuid, priv: exitPriv, sid: exitShortId, sni: exitSni,
+        port: exitPort,
+        // The exit is dialed THROUGH the relay (detour) and the client exit
+        // outbound carries NO flow — so the exit SERVER must not mandate Vision
+        // either, or the VLESS handshake fails and the exit leg is dead.
+        vision: false);
 
     final clientConfig = <String, dynamic>{
       'log': {'level': 'info', 'timestamp': true},
@@ -245,7 +264,7 @@ class ServerGen {
           'server': relayIp,
           'server_port': relayPort,
           'uuid': relayUuid,
-          'flow': 'xtls-rprx-vision',
+          // No flow: this hop tunnels the exit's TLS, so Vision must not splice it.
           'tls': _clientReality(relaySni, relayPub, relayShortId),
         },
         {'type': 'direct', 'tag': 'direct'},
@@ -271,6 +290,7 @@ class ServerGen {
     required String sid,
     required String sni,
     required int port,
+    bool vision = true,
   }) =>
       {
         'log': {'level': 'info', 'timestamp': true},
@@ -281,7 +301,7 @@ class ServerGen {
             'listen': '::',
             'listen_port': port,
             'users': [
-              {'uuid': uuid, 'flow': 'xtls-rprx-vision'}
+              {'uuid': uuid, if (vision) 'flow': 'xtls-rprx-vision'}
             ],
             'tls': {
               'enabled': true,

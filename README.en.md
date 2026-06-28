@@ -49,7 +49,14 @@ before anything applies or connects.
 
 ### Anti-DPI & resilience (the ТСПУ core)
 - **uTLS** with a selectable fingerprint pool (chrome / firefox / safari / edge / ios / yandex),
-  applied to imported configs too; **TLS ClientHello fragmentation** to split the SNI; ECH plumbing.
+  applied to imported configs too; **TLS ClientHello fragmentation** to split the SNI.
+- **Native ECH masquerade (the way Chrome does it)** — with ECH on, the app auto-discovers each node's
+  DNS-published ECH key (over encrypted DoH) and **encrypts the real TLS server name** inside the
+  handshake: only the cover `public_name` is on the wire (for a Cloudflare-fronted node, a Cloudflare
+  name). No bespoke binary — the same edge proprietary "masquerade" VPNs get from a separate program,
+  here on the stock core. Best for Cloudflare-fronted / your own ECH endpoint; on a plain node with no
+  ECH it's a no-op (best-effort lookup, fails safe on timeout). Reality is left untouched (it hides its
+  own name a different way).
 - **Server-less DPI bypass (WinDivert)** — an optional zapret-class packet engine (`winws`) that
   desyncs the outgoing TLS ClientHello (fake decoy + split/disorder + TTL fooling) so ТСПУ can't
   read the SNI, unblocking throttled / TLS-DPI sites (YouTube, Discord, Rutracker…) with **no
@@ -68,20 +75,19 @@ before anything applies or connects.
 - **Hard-network (mobile-operator) mode** — for the "works on home Wi-Fi but not on mobile data"
   case: one tap forces TLS fragmentation on, keeps the survivor-preferring cascade active, and turns
   on auto-adapt — surfaced right when the tunnel goes dark, not buried in settings.
-- **Native Telegram unblock** — Telegram is *IP-blocked* in Russia (its data-centre IP ranges are
-  dropped and its calls throttled), so a server-less SNI bypass can't reach it. Instead the app
-  **automatically** pins Telegram's *published* DC/relay IP ranges + domains to your server exit the
-  moment you connect — nothing to set up, no MTProto-proxy links to paste. **To use it:** add a
-  server and press Connect, and Telegram just works. **Messages** ride the tunnel in either mode;
-  **voice/video calls** need **TUN (full-device) mode**, because calls go over UDP that only TUN
-  captures (system-proxy mode is TCP-only → messages yes, calls no). It needs a working server (a
-  foreign exit) — the server-less bypass can't help here, because the block is at the IP layer, not
-  the SNI.
-  **Tip (covers calls in any mode):** Telegram has its own built-in **SOCKS5 proxy** — point it at
-  `127.0.0.1:2080` (Telegram → Settings → Advanced → Connection type → Use custom proxy → SOCKS5). The
-  app's local proxy listens on that port **always** — in proxy *and* TUN mode — so Telegram then routes
-  itself through the tunnel — **messages and calls** (it relays calls over the proxy) — without
-  depending on the app's mode.
+- **Native server-less Telegram unblock (`tgcore` engine)** — a bundled local MTProxy bridges Telegram
+  to its *un-throttled web gateway* over a WebSocket masked as *your* browser's TLS (the fingerprint is
+  captured once, automatically). Telegram — **messages AND media** — rides a clean path that looks like
+  ordinary browser HTTPS, **with no foreign server**. Flip the toggle (Settings → Advanced → "Telegram
+  without a server") and tap "Open in Telegram" — the proxy is added in one tap. The base needs no admin;
+  the optional **Calls** switch adds a packet-level STUN desync (needs admin). Honest scope: it works
+  *from inside* Russia (the un-throttled gateway is only clean under the filter), it's about reliability
+  + media rather than raw speed, and a full regional IP shutdown still needs a server.
+- **Via your own server (when even the gateway is IP-blocked)** — on connect the app **automatically**
+  pins Telegram's published DC/relay CIDRs + domains to your foreign exit. **Messages** ride either mode;
+  **calls** (UDP) need **TUN**. Tip: point Telegram's built-in **SOCKS5** at `127.0.0.1:2080` (Settings →
+  Advanced → Use custom proxy → SOCKS5) — the app's local proxy listens there always (proxy and TUN), so
+  Telegram routes itself through the tunnel for **both messages and calls**, independent of the app mode.
 - Proactive hop on sustained **latency degradation** before a path is fully cut.
 - **Live censorship-fact feed** — the throttled-domain list + freeze thresholds refresh *through
   the tunnel* on connect (data-only, signed-in-spirit, hard-clamped), so a new blocking wave is
@@ -242,7 +248,8 @@ pwsh tool/leak-test.ps1                     # (admin, TUN + kill-switch ON) prov
 Done: transport cascade (survivability-ranked) + freeze/whitelist detection, hard-network
 (mobile-operator) one-tap mode, anti-DPI fingerprint pool, server-less WinDivert DPI-desync sidecar
 (winws), censorship-fact feed, custom routing rules, per-app split-tunnel, Hysteria2 multi-port /
-port-hopping, native Telegram unblock, a **learned per-network transport memory** (the cascade
+port-hopping, native server-less Telegram unblock (`tgcore` engine) + server-side pin, a **learned
+per-network transport memory** (the cascade
 remembers which transport survives on your operator and tries it first, across restarts) + a
 **DoH-resolver cascade** (resilient name resolution when 1.1.1.1 is blocked) + one-tap **desync-method
 escalation**, a **pre-connect whole-profile latency probe**, **Hysteria2/TUIC certificate pinning**
